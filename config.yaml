@@ -1,0 +1,50 @@
+folder_structure:
+  alternative_patterns:
+  - pattern: (.+)-([0-9]+)
+  - pattern: (.+)\s+([0-9]+)
+  - pattern: ([^_]+)_
+  known_magazines:
+  - aliases:
+    - orizzonti
+    - orz
+    - or
+    - orizz
+    name: Orizzonti
+  - aliases:
+    - we
+    - w&e
+    - we_eni
+    - we-eni
+    name: WE
+  log_level: INFO
+  log_unknown: true
+  magazine_pattern: (.+)_([0-9]+)
+openai:
+  api_key: ""  # DO NOT store actual API keys in this file
+  model: gpt-4o-mini
+  temperature: 0.3
+  max_tokens: 1000
+prompts:
+  extract_fields: "You are an expert data analyst specializing in content analysis\
+    \ for the energy industry.\nYour task is to analyze the following article from\
+    \ ENI Magazine and extract specific structured information with the following\
+    \ rules:\n1. **Abstract**: Provide a concise summary (1-2 sentences) that captures\
+    \ the key insights. The summary should be in sentence case.\n2. **Theme**: Select\
+    \ the most appropriate primary theme from the following list (return exactly one,\
+    \ using the list's formatting):\n   - Energy Transition\n   - Sustainability\n\
+    \   - Innovation & Technology\n   - Business & Markets\n   - Climate & Environment\n\
+    \   - Geopolitics\n   - Corporate News\n   - Industry Insights\n   - Social Impact\n\
+    \   - Culture & Society\n\n3. **Format**: Identify the content format from these\
+    \ options:\n   - Article\n   - Interview\n   - Report\n   - Case Study\n   - Analysis\n\
+    \   - Commentary\n   - Photo Gallery\n   - Infographic\n   - News Brief\n\n4.\
+    \ **Geographic Area**: Identify the specific geographic region(s) discussed in\
+    \ the article. Use standardized names (e.g., \"Northern Italy\", \"Gulf of Mexico\"\
+    , \"Southeast Asia\") and return \"Not Specified\" if absent.\n5. **Keywords**:\
+    \ Provide 3-5 relevant keywords describing the article, in lowercase and separated\
+    \ by commas.\nEnsure that your response is strictly in JSON format, with no extra\
+    \ text. The JSON should have the following structure:\n{\n  \"abstract\": \"concise\
+    \ summary in sentence case\",\n  \"theme\": \"one of the listed themes, exactly\
+    \ as provided\",\n  \"format\": \"one of the provided formats\",\n  \"geographic_area\"\
+    : \"standardized region or 'Not Specified'\",\n  \"keywords\": \"comma-separated\
+    \ list of keywords in lowercase\"\n}\nArticle text: {text}\n"
+  reconcile_metadata: "You are an expert data validator for ENI Magazine, tasked with reconciling metadata extracted from folder structures and document content.\n\nYou have been provided with:\n1. The file path: \"{file_path}\"\n2. Preliminary metadata extracted from the folder structure:\n   - Magazine: \"{magazine}\"\n   - Magazine Number: \"{magazine_no}\"\n   - Author: \"{author}\"\n   - Title: \"{title}\"\n3. The complete article text content\n\n**IMPORTANT**: The magazine and magazine number provided above (extracted from the folder structure) MUST be used as the authoritative values. DO NOT change these fields unless there is unambiguous evidence in the article text that they are incorrect. In almost all cases, use the folder metadata for 'magazine' and 'magazine_no'.\n\nYour task is to verify this metadata against the actual article content and correct any discrepancies. Follow these specific rules:\n\n1. **Magazine**: Must be either \"WE\" or \"Orizzonti\" - use the value provided from the folder structure metadata. DO NOT invent or infer alternative magazine names.\n\n2. **Magazine Number**: Use the issue number from the folder structure metadata. DO NOT change it unless clearly incorrect in the article text.\n\n3. **Author**: The correct author name as indicated in the document content (which may differ from the folder structure). Use proper capitalization.\n\n4. **Title**: The correct article title as indicated in the document content (which may differ from the file name). Use proper title case.\n\n5. **Abstract**: Provide a concise summary (1-2 sentences) that captures the key insights. The summary should be in sentence case.\n\n6. **Theme**: Select the most appropriate primary theme from the following list (return exactly one, using the list's formatting):\n   - Energy Transition\n   - Sustainability\n   - Innovation & Technology\n   - Business & Markets\n   - Climate & Environment\n   - Geopolitics\n   - Corporate News\n   - Industry Insights\n   - Social Impact\n   - Culture & Society\n\n7. **Format**: Identify the content format from these options:\n   - Article\n   - Interview\n   - Report\n   - Case Study\n   - Analysis\n   - Commentary\n   - Photo Gallery\n   - Infographic\n   - News Brief\n\n8. **Geographic Area**: Identify the specific geographic region(s) discussed in the article. Use standardized names (e.g., \"Northern Italy\", \"Gulf of Mexico\", \"Southeast Asia\") and return \"Not Specified\" if absent.\n\n9. **Keywords**: Provide 3-5 relevant keywords describing the article, in lowercase and separated by commas.\n\nYour response must be in strict JSON format with the following structure:\n{\n  \"magazine\": \"magazine name from folder structure (WE or Orizzonti)\",\n  \"magazine_no\": \"magazine issue number from folder structure\",\n  \"author\": \"corrected author name\",\n  \"title\": \"confirmed article title\",\n  \"abstract\": \"concise summary in sentence case\",\n  \"theme\": \"one of the listed themes, exactly as provided\",\n  \"format\": \"one of the provided formats\",\n  \"geographic_area\": \"standardized region or 'Not Specified'\",\n  \"keywords\": \"comma-separated list of keywords in lowercase\"\n}\n\nArticle text content:\n{text_content}\n"

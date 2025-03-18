@@ -1,0 +1,140 @@
+folder_structure:
+  alternative_patterns:
+  - pattern: (.+)-([0-9]+)
+  - pattern: (.+)\s+([0-9]+)
+  - pattern: ([^_]+)_
+  known_magazines:
+  - aliases:
+    - orizzonti
+    - orz
+    - or
+    - orizz
+    name: Orizzonti
+  - aliases:
+    - we
+    - w&e
+    - we_eni
+    - we-eni
+    name: WE
+  log_level: INFO
+  log_unknown: true
+  magazine_pattern: (.+)_([0-9]+)
+openai:
+  api_key: ""  # Enter your OpenAI API key here or through the UI
+  max_tokens: 1000
+  model: gpt-4o-mini  # Options: gpt-4o-mini, gpt-4-turbo, gpt-4, gpt-3.5-turbo
+  temperature: 0.3
+prompts:
+  extract_fields: >
+    You are an expert data analyst specializing in content analysis for the energy industry.
+    
+    Your task is to analyze the following article from ENI Magazine and extract specific structured information with the following rules:
+    
+    1. **Abstract**: Provide a concise summary (1-2 sentences) that captures the key insights. The summary should be in sentence case.
+    
+    2. **Theme**: Select the most appropriate primary theme from the following list (return exactly one, using the list's formatting):
+       - Energy Transition
+       - Sustainability
+       - Innovation & Technology
+       - Business & Markets
+       - Climate & Environment
+       - Geopolitics
+       - Corporate News
+       - Industry Insights
+       - Social Impact
+       - Culture & Society
+    
+    3. **Format**: Identify the content format from these options:
+       - Article
+       - Interview
+       - Report
+       - Case Study
+       - Analysis
+       - Commentary
+       - Photo Gallery
+       - Infographic
+       - News Brief
+    
+    4. **Geographic Area**: Identify the specific geographic region(s) discussed in the article. Use standardized names (e.g., "Northern Italy", "Gulf of Mexico", "Southeast Asia") and return "Not Specified" if absent.
+    
+    5. **Keywords**: Provide 3-5 relevant keywords describing the article, in lowercase and separated by commas.
+    
+    Ensure that your response is strictly in JSON format, with no extra text. The JSON should have the following structure:
+    
+    {
+      "abstract": "concise summary in sentence case",
+      "theme": "one of the listed themes, exactly as provided",
+      "format": "one of the provided formats",
+      "geographic_area": "standardized region or 'Not Specified'",
+      "keywords": "comma-separated list of keywords in lowercase"
+    }
+    
+    Article text:
+    {text}
+    
+  reconcile_metadata: >
+    You are an expert data validator for ENI Magazine, tasked with reconciling metadata extracted from folder structures and document content.
+
+    You have been provided with:
+    1. The file path: "{file_path}"
+    2. Preliminary metadata extracted from the folder structure:
+       - Magazine: "{magazine}"
+       - Magazine Number: "{magazine_no}"
+       - Author: "{author}"
+       - Title: "{title}"
+    3. The complete article text content
+
+    Your task is to verify this metadata against the actual article content and correct any discrepancies. Follow these specific rules:
+
+    1. **Magazine**: Must be either "WE" or "Orizzonti" - confirm which magazine this article is from based on the content and path.
+
+    2. **Magazine Number**: Verify the issue number (should be a number).
+
+    3. **Author**: The correct author name as indicated in the document content (which may differ from the folder structure). Use proper capitalization.
+
+    4. **Title**: The correct article title as indicated in the document content (which may differ from the file name). Use proper title case.
+
+    5. **Abstract**: Provide a concise summary (1-2 sentences) that captures the key insights. The summary should be in sentence case.
+
+    6. **Theme**: Select the most appropriate primary theme from the following list (return exactly one, using the list's formatting):
+       - Energy Transition
+       - Sustainability
+       - Innovation & Technology
+       - Business & Markets
+       - Climate & Environment
+       - Geopolitics
+       - Corporate News
+       - Industry Insights
+       - Social Impact
+       - Culture & Society
+
+    7. **Format**: Identify the content format from these options:
+       - Article
+       - Interview
+       - Report
+       - Case Study
+       - Analysis
+       - Commentary
+       - Photo Gallery
+       - Infographic
+       - News Brief
+
+    8. **Geographic Area**: Identify the specific geographic region(s) discussed in the article. Use standardized names (e.g., "Northern Italy", "Gulf of Mexico", "Southeast Asia") and return "Not Specified" if absent.
+
+    9. **Keywords**: Provide 3-5 relevant keywords describing the article, in lowercase and separated by commas.
+
+    Your response must be in strict JSON format with the following structure:
+    {
+      "magazine": "corrected magazine name (WE or Orizzonti)",
+      "magazine_no": "corrected magazine issue number",
+      "author": "corrected author name",
+      "title": "confirmed article title",
+      "abstract": "concise summary in sentence case",
+      "theme": "one of the listed themes, exactly as provided",
+      "format": "one of the provided formats",
+      "geographic_area": "standardized region or 'Not Specified'",
+      "keywords": "comma-separated list of keywords in lowercase"
+    }
+
+    Article text content:
+    {text_content} 
