@@ -223,17 +223,62 @@ def reconcile_metadata(file_data: Dict[str, Any], config: Dict[str, Any] = None)
             prompt_template = "Reconcile the following metadata from file: {file_path}\nMagazine: {magazine}\nMagazine Number: {magazine_no}\nAuthor: {author}\nTitle: {title}\n\nText content: {text_content}\n\nReturn a JSON with corrected fields."
             print("Using fallback prompt template for reconciliation as it wasn't found in config")
         
-        # Prepare the prompt with file data - using a safer approach
-        # Instead of using string formatting which can fail if there are unexpected placeholders,
-        # build the prompt directly
-        
-        prompt = "Reconcile the following metadata from file:\n"
-        prompt += f"Magazine: {file_data.get('magazine', '')}\n"
-        prompt += f"Magazine Number: {file_data.get('magazine_no', '')}\n"
-        prompt += f"Author: {file_data.get('author', '')}\n"
-        prompt += f"Title: {file_data.get('title', '')}\n\n"
-        prompt += f"Text content: {file_data.get('text_content', '')}\n\n"
-        prompt += "Return a JSON with the following fields: magazine, magazine_no, author, title, abstract, theme, format, geographic_area, keywords."
+        # Format the prompt template with the file data
+        try:
+            text_preview = file_data.get('text_content', '')[:100] + "..." if len(file_data.get('text_content', '')) > 100 else file_data.get('text_content', '')
+            
+            print(f"\n========== RECONCILIATION INPUTS ==========")
+            print(f"Magazine: '{file_data.get('magazine', '')}'")
+            print(f"Magazine Number: '{file_data.get('magazine_no', '')}'")
+            print(f"Author: '{file_data.get('author', '')}'")
+            print(f"Title: '{file_data.get('title', '')}'")
+            print(f"============================================\n")
+            
+            # Format the prompt template more carefully to avoid JSON parsing errors
+            try:
+                # Try using format() with named parameters
+                prompt = prompt_template.format(
+                    file_path=file_data.get('full_path', ''),
+                    magazine=file_data.get('magazine', ''),
+                    magazine_no=file_data.get('magazine_no', ''),
+                    author=file_data.get('author', ''),
+                    title=file_data.get('title', ''),
+                    text_content=file_data.get('text_content', '')
+                )
+            except KeyError as template_error:
+                # If format() with named parameters fails, try a more manual approach
+                print(f"Error with standard template formatting: {template_error}. Trying alternative approach.")
+                
+                # Replace placeholders manually
+                prompt = prompt_template
+                placeholder_map = {
+                    "{file_path}": file_data.get('full_path', ''),
+                    "{magazine}": file_data.get('magazine', ''),
+                    "{magazine_no}": file_data.get('magazine_no', ''),
+                    "{author}": file_data.get('author', ''),
+                    "{title}": file_data.get('title', ''),
+                    "{text_content}": file_data.get('text_content', '')
+                }
+                
+                for placeholder, value in placeholder_map.items():
+                    prompt = prompt.replace(placeholder, str(value))
+                
+                print("Used manual placeholder replacement.")
+            
+            # Print a short version of the formatted prompt for debugging
+            prompt_preview = prompt.replace(file_data.get('text_content', ''), '[TEXT CONTENT OMITTED FOR BREVITY]')
+            print(f"Using formatted prompt template (preview):\n{prompt_preview[:500]}...\n")
+            
+        except Exception as format_error:
+            print(f"Error formatting prompt template: {format_error}. Using fallback method.")
+            # Fallback to the direct construction method if template formatting fails
+            prompt = "Reconcile the following metadata from file:\n"
+            prompt += f"Magazine: {file_data.get('magazine', '')}\n"
+            prompt += f"Magazine Number: {file_data.get('magazine_no', '')}\n"
+            prompt += f"Author: {file_data.get('author', '')}\n"
+            prompt += f"Title: {file_data.get('title', '')}\n\n"
+            prompt += f"Text content: {file_data.get('text_content', '')}\n\n"
+            prompt += "Return a JSON with the following fields: magazine, magazine_no, author, title, abstract, theme, format, geographic_area, keywords."
         
         # Check if response_format is supported for this model
         response_format_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4-turbo-preview", "gpt-4o-mini"]
@@ -282,19 +327,13 @@ def reconcile_metadata(file_data: Dict[str, Any], config: Dict[str, Any] = None)
             
             print("Successfully parsed JSON response")
             
-            # Ensure all required fields are present
-            required_fields = ['magazine', 'magazine_no', 'author', 'title', 'abstract', 'theme', 'format', 'geographic_area', 'keywords']
-            for field in required_fields:
-                if field not in data:
-                    print(f"Missing field '{field}' in response, adding default value from original data")
-                    if field in file_data:
-                        data[field] = file_data.get(field, '')
-                    elif field == 'abstract':
-                        data[field] = "No abstract available"
-                    elif field == 'keywords':
-                        data[field] = "unknown, missing, unspecified"
-                    else:
-                        data[field] = "Unknown"
+            # Debug the returned values for magazine and magazine_no
+            print(f"\n========== RECONCILIATION OUTPUTS ==========")
+            print(f"Magazine from AI: '{data.get('magazine', 'not found')}'")
+            print(f"Magazine No from AI: '{data.get('magazine_no', 'not found')}'")
+            print(f"Original Magazine: '{file_data.get('magazine', 'not found')}'")
+            print(f"Original Magazine No: '{file_data.get('magazine_no', 'not found')}'")
+            print(f"==============================================\n")
             
             # Create a new dictionary with the validated/corrected data
             reconciled_data = {
@@ -303,11 +342,51 @@ def reconcile_metadata(file_data: Dict[str, Any], config: Dict[str, Any] = None)
                 'format': data.get('format', file_data.get('format', 'Unknown')),
                 'geographic_area': data.get('geographic_area', file_data.get('geographic_area', 'Unknown')),
                 'keywords': data.get('keywords', file_data.get('keywords', 'error, extraction, failed')),
-                'magazine': data.get('magazine', file_data.get('magazine', '')),
-                'magazine_no': data.get('magazine_no', file_data.get('magazine_no', '')),
                 'author': data.get('author', file_data.get('author', '')),
                 'title': data.get('title', file_data.get('title', '')),
             }
+            
+            # Validate magazine name - AI can correct if it doesn't match expected values
+            ai_magazine = data.get('magazine', '')
+            folder_magazine = file_data.get('magazine', '')
+            
+            if ai_magazine.lower() in ["orizzonti", "we"]:
+                # AI provided a valid magazine name, use it (could be a correction)
+                reconciled_data['magazine'] = ai_magazine
+                if ai_magazine != folder_magazine:
+                    print(f"AI corrected magazine from '{folder_magazine}' to '{ai_magazine}'")
+            else:
+                # AI provided an invalid magazine name, use folder value
+                reconciled_data['magazine'] = folder_magazine
+                print(f"AI suggested invalid magazine name '{ai_magazine}', using folder value '{folder_magazine}'")
+            
+            # For magazine_no, we'll accept the AI version if it looks numeric
+            ai_magazine_no = data.get('magazine_no', '')
+            folder_magazine_no = file_data.get('magazine_no', '')
+            
+            # Convert to string if it's an integer/number
+            if isinstance(ai_magazine_no, (int, float)):
+                ai_magazine_no = str(ai_magazine_no)
+            
+            # Check if AI version is numeric or can be converted to a number
+            is_valid_number = False
+            
+            # Handle both string and numeric types
+            if isinstance(ai_magazine_no, str):
+                is_valid_number = ai_magazine_no.isdigit() or (ai_magazine_no.replace('.', '', 1).isdigit() if '.' in ai_magazine_no else False)
+            elif isinstance(ai_magazine_no, (int, float)):
+                is_valid_number = True
+                ai_magazine_no = str(ai_magazine_no)  # Convert to string for consistent handling
+                
+            if ai_magazine_no and is_valid_number:
+                reconciled_data['magazine_no'] = ai_magazine_no
+                if ai_magazine_no != folder_magazine_no:
+                    print(f"AI corrected magazine_no from '{folder_magazine_no}' to '{ai_magazine_no}'")
+            else:
+                # Use folder value if AI value doesn't look like a number
+                reconciled_data['magazine_no'] = folder_magazine_no
+                if ai_magazine_no and ai_magazine_no != folder_magazine_no:
+                    print(f"AI suggested invalid magazine_no '{ai_magazine_no}', using folder value '{folder_magazine_no}'")
             
             # Keep the original data for reference
             reconciled_data['original_magazine'] = file_data.get('magazine', '')

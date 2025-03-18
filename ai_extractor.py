@@ -253,13 +253,32 @@ def extract_fields_from_text(file_path, text_content, config=None):
             prompt_template = "Extract metadata from the following text. Return a JSON object with fields: magazine, magazine_no, author, title, abstract, theme, format, geographic_area, keywords.\n\n{text_content}"
             print("Using fallback prompt template as it wasn't found in config")
         
-        # Prepare the prompt - using a safer approach that doesn't rely on string formatting
-        # which can fail if the template contains unexpected placeholders
-        
-        # Use a safer, more direct approach
-        prompt = "Extract metadata from the following text. Return a JSON object with fields: magazine, magazine_no, author, title, abstract, theme, format, geographic_area, keywords.\n\n"
-        prompt += text_content
+        # Format the prompt template with the text content
+        try:
+            # Print a preview of the text content for debugging
+            text_preview = text_content[:100] + "..." if len(text_content) > 100 else text_content
+            print(f"\n========== EXTRACTION INPUTS ==========")
+            print(f"File: '{file_path}'")
+            print(f"Text preview: '{text_preview}'")
+            print(f"======================================\n")
             
+            # Format the prompt template using the text content and file path
+            prompt = prompt_template.format(
+                text_content=text_content,
+                file_path=file_path
+            )
+            
+            # Print a short version of the formatted prompt for debugging
+            prompt_preview = prompt.replace(text_content, '[TEXT CONTENT OMITTED FOR BREVITY]')
+            print(f"Using formatted prompt template (preview):\n{prompt_preview[:300]}...\n")
+            
+        except KeyError as key_error:
+            print(f"Error formatting prompt template: {key_error}. Using fallback method.")
+            # Fallback to the direct construction method if template formatting fails
+            prompt = "Extract metadata from the following text and file path. Return a JSON object with fields: magazine, magazine_no, author, title, abstract, theme, format, geographic_area, keywords.\n\n"
+            prompt += f"File path: {file_path}\n\n"
+            prompt += text_content
+        
         # Check if response_format is supported for this model
         response_format_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4-turbo-preview", "gpt-4o-mini"]
         model_base = model.split('-')[0] + '-' + model.split('-')[1]  # Get base model name

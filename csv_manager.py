@@ -4,48 +4,39 @@ from typing import List, Dict, Any, Optional
 
 def create_dataframe(file_data_list: List[Dict[str, Any]]) -> pd.DataFrame:
     """
-    Create a DataFrame from the list of file data dictionaries.
+    Create a DataFrame from a list of file data dictionaries.
     
     Args:
-        file_data_list: List of dictionaries containing file metadata and extracted fields
+        file_data_list: List of file data dictionaries
         
     Returns:
-        Pandas DataFrame with all the data
+        DataFrame containing all metadata fields
     """
-    # Define the columns for the DataFrame
-    columns = [
-        'title', 'abstract', 'preview_image', 'magazine', 'magazine_no',
-        'theme', 'format', 'author', 'geographic_area', 'keywords',
-        'original_magazine', 'original_magazine_no', 'original_author', 'original_title',
-        'full_path'
-    ]
-    
-    # Create an empty DataFrame with the defined columns
-    df = pd.DataFrame(columns=columns)
-    
-    # Add data from each file to the DataFrame
+    # First determine all possible columns across all dictionaries
+    all_columns = set()
     for file_data in file_data_list:
-        # Create a new row with only the columns we want
-        row = {
-            'title': file_data.get('title', ''),
-            'abstract': file_data.get('abstract', ''),
-            'preview_image': file_data.get('preview_image', ''),
-            'magazine': file_data.get('magazine', ''),
-            'magazine_no': file_data.get('magazine_no', ''),
-            'theme': file_data.get('theme', ''),
-            'format': file_data.get('format', ''),
-            'author': file_data.get('author', ''),
-            'geographic_area': file_data.get('geographic_area', ''),
-            'keywords': file_data.get('keywords', ''),
-            'original_magazine': file_data.get('original_magazine', file_data.get('magazine', '')),
-            'original_magazine_no': file_data.get('original_magazine_no', file_data.get('magazine_no', '')),
-            'original_author': file_data.get('original_author', file_data.get('author', '')),
-            'original_title': file_data.get('original_title', file_data.get('title', '')),
-            'full_path': file_data.get('full_path', '')
-        }
-        
-        # Append the row to the DataFrame
-        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        all_columns.update(file_data.keys())
+    
+    # Remove fields we don't want to include in the CSV
+    exclude_fields = ['text_content', 'preview_image', 'full_path']
+    for field in exclude_fields:
+        if field in all_columns:
+            all_columns.remove(field)
+    
+    # Create a list of dictionaries with only the selected columns
+    rows = []
+    for file_data in file_data_list:
+        row = {col: file_data.get(col, '') for col in all_columns}
+        # Also include full_path for reference
+        row['full_path'] = file_data.get('full_path', '')
+        rows.append(row)
+    
+    # Create DataFrame with specific data types to avoid conversion issues
+    df = pd.DataFrame(rows)
+    
+    # Convert all columns to string type to avoid data type issues
+    for col in df.columns:
+        df[col] = df[col].astype(str)
     
     return df
 
@@ -81,33 +72,33 @@ def update_dataframe(df: pd.DataFrame, file_data: Dict[str, Any]) -> pd.DataFram
     """
     # Check if the file already exists in the DataFrame
     # We identify files by the full path to avoid conflicts with renamed or corrected metadata
-    mask = df['full_path'] == file_data.get('full_path', '')
+    mask = df['full_path'].astype(str) == str(file_data.get('full_path', ''))
     
     # If full_path is missing, fall back to the old method
     if not file_data.get('full_path', '') or not mask.any():
         mask = (
-            (df['title'] == file_data.get('title', '')) & 
-            (df['magazine'] == file_data.get('magazine', '')) & 
-            (df['author'] == file_data.get('author', ''))
+            (df['title'].astype(str) == str(file_data.get('title', ''))) & 
+            (df['magazine'].astype(str) == str(file_data.get('magazine', ''))) & 
+            (df['author'].astype(str) == str(file_data.get('author', '')))
         )
     
     # Create a new row with the file data
     row = {
-        'title': file_data.get('title', ''),
-        'abstract': file_data.get('abstract', ''),
-        'preview_image': file_data.get('preview_image', ''),
-        'magazine': file_data.get('magazine', ''),
-        'magazine_no': file_data.get('magazine_no', ''),
-        'theme': file_data.get('theme', ''),
-        'format': file_data.get('format', ''),
-        'author': file_data.get('author', ''),
-        'geographic_area': file_data.get('geographic_area', ''),
-        'keywords': file_data.get('keywords', ''),
-        'original_magazine': file_data.get('original_magazine', file_data.get('magazine', '')),
-        'original_magazine_no': file_data.get('original_magazine_no', file_data.get('magazine_no', '')),
-        'original_author': file_data.get('original_author', file_data.get('author', '')),
-        'original_title': file_data.get('original_title', file_data.get('title', '')),
-        'full_path': file_data.get('full_path', '')
+        'title': str(file_data.get('title', '')),
+        'abstract': str(file_data.get('abstract', '')),
+        'preview_image': str(file_data.get('preview_image', '')),
+        'magazine': str(file_data.get('magazine', '')),
+        'magazine_no': str(file_data.get('magazine_no', '')),
+        'theme': str(file_data.get('theme', '')),
+        'format': str(file_data.get('format', '')),
+        'author': str(file_data.get('author', '')),
+        'geographic_area': str(file_data.get('geographic_area', '')),
+        'keywords': str(file_data.get('keywords', '')),
+        'original_magazine': str(file_data.get('original_magazine', file_data.get('magazine', ''))),
+        'original_magazine_no': str(file_data.get('original_magazine_no', file_data.get('magazine_no', ''))),
+        'original_author': str(file_data.get('original_author', file_data.get('author', ''))),
+        'original_title': str(file_data.get('original_title', file_data.get('title', ''))),
+        'full_path': str(file_data.get('full_path', ''))
     }
     
     # If the file already exists, update it, otherwise append it
@@ -136,6 +127,10 @@ def update_dataframe(df: pd.DataFrame, file_data: Dict[str, Any]) -> pd.DataFram
         # Append the new row
         df = pd.concat([df, new_df], ignore_index=True)
     
+    # Ensure all columns are strings to avoid type issues
+    for col in df.columns:
+        df[col] = df[col].astype(str)
+    
     return df
 
 def read_csv(file_path: str) -> Optional[pd.DataFrame]:
@@ -150,8 +145,13 @@ def read_csv(file_path: str) -> Optional[pd.DataFrame]:
     """
     if os.path.exists(file_path):
         try:
-            # Try to read the CSV file
-            df = pd.read_csv(file_path, encoding='utf-8')
+            # Try to read the CSV file with string dtypes to prevent automatic type conversion
+            df = pd.read_csv(file_path, encoding='utf-8', dtype=str)
+            
+            # Make sure all columns are explicitly cast to string to avoid typing issues
+            for col in df.columns:
+                df[col] = df[col].astype(str)
+                
             return df
         except pd.errors.EmptyDataError:
             # Handle case where the file exists but is empty or has no columns

@@ -34,6 +34,8 @@ def extract_metadata_from_path(file_path: str, config: Dict[str, Any]) -> Dict[s
     
     # Extract path components
     parts = file_path.split(os.sep)
+    print(f"Processing file path: {file_path}")
+    print(f"Path components: {parts}")
     
     # Initialize metadata with default values
     metadata = {
@@ -44,49 +46,92 @@ def extract_metadata_from_path(file_path: str, config: Dict[str, Any]) -> Dict[s
         'file_path': file_path
     }
     
-    # Try to match magazine pattern in all path components, not just at a specific level
-    magazine_found = False
-    
-    # First try with main pattern
-    for part in parts:
-        match = re.match(magazine_pattern, part)
-        if match:
-            metadata['magazine'] = match.group(1)
-            metadata['magazine_no'] = match.group(2)
-            magazine_found = True
-            break
-    
-    # If no match found, try alternative patterns
-    if not magazine_found and alternative_patterns:
-        for part in parts:
-            for pattern_dict in alternative_patterns:
-                pattern = pattern_dict.get('pattern', '')
-                if not pattern:
-                    continue
-                
-                match = re.match(pattern, part)
-                if match:
-                    # If pattern has two groups, use both magazine and number
-                    if len(match.groups()) >= 2:
-                        metadata['magazine'] = match.group(1)
-                        metadata['magazine_no'] = match.group(2)
-                    # If pattern has only one group, use it for magazine name
-                    elif len(match.groups()) == 1:
-                        metadata['magazine'] = match.group(1)
-                    
-                    magazine_found = True
+    # IMPROVED: Direct extraction from known folder structure patterns
+    if 'data' in parts:
+        data_index = parts.index('data')
+        
+        # Check for magazine folder (like "WE" or "Orizzonti") after 'data'
+        if len(parts) > data_index + 1:
+            magazine_dir = parts[data_index + 1]
+            
+            # Match against known magazines from config
+            magazine_name = None
+            for mag_info in known_magazines:
+                if magazine_dir.lower() == mag_info['name'].lower() or magazine_dir.lower() in [alias.lower() for alias in mag_info.get('aliases', [])]:
+                    magazine_name = mag_info['name']
+                    metadata['magazine'] = magazine_name
                     break
             
-            if magazine_found:
-                break
+            if metadata['magazine'] == 'Unknown':
+                metadata['magazine'] = magazine_dir  # Fallback to directory name
+            
+            # Extract issue number from next component
+            if len(parts) > data_index + 2:
+                issue_dir = parts[data_index + 2]
+                
+                # Try different patterns for issue number extraction
+                
+                # Pattern: "Orizzonti_62_x_web"
+                x_web_match = re.search(r'.*_(\d+)_x_web$', issue_dir)
+                if x_web_match:
+                    metadata['magazine_no'] = x_web_match.group(1)
+                
+                # Pattern: "WE_60"
+                if not metadata['magazine_no']:
+                    underscore_match = re.search(r'.*_(\d+)$', issue_dir)
+                    if underscore_match:
+                        metadata['magazine_no'] = underscore_match.group(1)
+                
+                # Pattern: "We 54"
+                if not metadata['magazine_no']:
+                    space_match = re.search(r'.*\s+(\d+)$', issue_dir)
+                    if space_match:
+                        metadata['magazine_no'] = space_match.group(1)
+                
+                # Try to extract author from next component if available
+                if len(parts) > data_index + 3:
+                    author_dir = parts[data_index + 3]
+                    # Skip if it looks like a number or special format
+                    if not author_dir.isdigit() and "_" not in author_dir:
+                        metadata['author'] = author_dir
     
-    # Try to extract author from context - check different possibilities
-    if len(parts) >= 3:  # Standard structure: Magazine_No/Author/file.docx
-        # Standard case - author is the second-to-last directory
-        metadata['author'] = parts[-2]
-    elif len(parts) >= 2:  # Simplified structure: Author/file.docx
-        # Simplified case - author is the directory containing the file
-        metadata['author'] = parts[-2]
+    # If direct extraction didn't work, fallback to pattern matching
+    if metadata['magazine'] == 'Unknown' or not metadata['magazine_no']:
+        # Original pattern matching code (keep as fallback)
+        magazine_found = False
+        
+        # First try with main pattern
+        for part in parts:
+            match = re.match(magazine_pattern, part)
+            if match:
+                metadata['magazine'] = match.group(1)
+                metadata['magazine_no'] = match.group(2)
+                magazine_found = True
+                break
+        
+        # If no match found, try alternative patterns
+        if not magazine_found and alternative_patterns:
+            for part in parts:
+                for pattern_dict in alternative_patterns:
+                    pattern = pattern_dict.get('pattern', '')
+                    if not pattern:
+                        continue
+                    
+                    match = re.match(pattern, part)
+                    if match:
+                        # If pattern has two groups, use both magazine and number
+                        if len(match.groups()) >= 2:
+                            metadata['magazine'] = match.group(1)
+                            metadata['magazine_no'] = match.group(2)
+                        # If pattern has only one group, use it for magazine name
+                        elif len(match.groups()) == 1:
+                            metadata['magazine'] = match.group(1)
+                        
+                        magazine_found = True
+                        break
+                
+                if magazine_found:
+                    break
     
     # Try to extract additional information from filename if available
     filename = metadata['title']
@@ -107,6 +152,8 @@ def extract_metadata_from_path(file_path: str, config: Dict[str, Any]) -> Dict[s
             if magazine_lower == magazine_info['name'].lower() or magazine_lower in magazine_info.get('aliases', []):
                 metadata['magazine'] = magazine_info['name']
                 break
+    
+    print(f"Extracted metadata: Magazine='{metadata['magazine']}', Issue='{metadata['magazine_no']}', Author='{metadata['author']}'")
     
     # Log any unusual structure for review
     if config['folder_structure'].get('log_unknown', False):
@@ -134,11 +181,9 @@ def process_zip_file(zip_file, config: Dict[str, Any]) -> List[Dict[str, str]]:
                 # Check for DOCX and other potential document formats
                 if file.lower().endswith(('.docx', '.doc')):
                     file_path = os.path.join(root, file)
-                    # Calculate relative path from temp_dir
-                    rel_path = os.path.relpath(file_path, temp_dir)
                     
-                    # Extract metadata from path
-                    metadata = extract_metadata_from_path(rel_path, config)
+                    # Instead of calculating a relative path, use the full file path
+                    metadata = extract_metadata_from_path(file_path, config)
                     metadata['full_path'] = file_path  # Store the full path for later use
                     
                     # Add to the list
@@ -167,11 +212,8 @@ def process_directory(directory_path: str, config: Dict[str, Any]) -> List[Dict[
             if file.lower().endswith(('.docx', '.doc')):
                 file_path = os.path.join(root, file)
                 
-                # Calculate relative path from directory_path
-                rel_path = os.path.relpath(file_path, directory_path)
-                
-                # Extract metadata from path
-                metadata = extract_metadata_from_path(rel_path, config)
+                # Instead of using relative path, pass the full file path
+                metadata = extract_metadata_from_path(file_path, config)
                 metadata['full_path'] = file_path  # Store the full path for later use
                 
                 # Add to the list

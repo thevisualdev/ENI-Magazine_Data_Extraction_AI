@@ -145,6 +145,42 @@ def process_file(file_data: Dict[str, Any], df: pd.DataFrame, config: Dict[str, 
                 # Update file data with extracted fields
                 file_data_copy.update(extracted_fields)
                 
+                # Ensure all required fields are present to enable Phase 2
+                required_fields = ['abstract', 'theme', 'format', 'geographic_area', 'keywords']
+                for field in required_fields:
+                    if field not in file_data_copy or not file_data_copy[field]:
+                        if field == 'abstract':
+                            file_data_copy[field] = "No abstract available"
+                        elif field == 'keywords':
+                            file_data_copy[field] = "unknown, missing, unspecified"
+                        else:
+                            file_data_copy[field] = "Unknown"
+                        print(f"Added missing field '{field}' with default value")
+                
+                # Ensure all required fields are present to enable Phase 2
+                required_fields = ['abstract', 'theme', 'format', 'geographic_area', 'keywords']
+                for field in required_fields:
+                    if field not in file_data_copy or not file_data_copy[field]:
+                        if field == 'abstract':
+                            file_data_copy[field] = "No abstract available"
+                        elif field == 'keywords':
+                            file_data_copy[field] = "unknown, missing, unspecified"
+                        else:
+                            file_data_copy[field] = "Unknown"
+                        print(f"Added missing field '{field}' with default value")
+                
+                # Ensure all required fields are present to enable Phase 2
+                required_fields = ['abstract', 'theme', 'format', 'geographic_area', 'keywords']
+                for field in required_fields:
+                    if field not in file_data_copy or not file_data_copy[field]:
+                        if field == 'abstract':
+                            file_data_copy[field] = "No abstract available"
+                        elif field == 'keywords':
+                            file_data_copy[field] = "unknown, missing, unspecified"
+                        else:
+                            file_data_copy[field] = "Unknown"
+                        print(f"Added missing field '{field}' with default value")
+                
                 # Restore original fields
                 file_data_copy.update(original_fields)
             else:
@@ -166,6 +202,18 @@ def process_file(file_data: Dict[str, Any], df: pd.DataFrame, config: Dict[str, 
                 # Extract fields
                 extracted_fields = extract_fields_from_text(file_data_copy['text_content'], config)
                 file_data_copy.update(extracted_fields)
+                
+                # Ensure all required fields are present after Phase 2 extraction
+                required_fields = ['abstract', 'theme', 'format', 'geographic_area', 'keywords']
+                for field in required_fields:
+                    if field not in file_data_copy or not file_data_copy[field]:
+                        if field == 'abstract':
+                            file_data_copy[field] = "No abstract available"
+                        elif field == 'keywords':
+                            file_data_copy[field] = "unknown, missing, unspecified"
+                        else:
+                            file_data_copy[field] = "Unknown"
+                        print(f"Added missing field '{field}' with default value")
             
             # Store original values before reconciliation
             if 'original_magazine' not in file_data_copy:
