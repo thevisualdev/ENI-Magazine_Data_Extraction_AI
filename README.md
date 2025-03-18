@@ -10,6 +10,7 @@ This application extracts structured data from ENI magazine DOCX files and compi
   - **Phase 2**: AI verification and reconciliation of metadata against article content
 - Extract metadata from folder structure (Magazine, Magazine No., Author)
 - Extract text and preview images from DOCX files
+- **Folder Image Support**: Automatically detects and uses images in article folders
 - Use OpenAI API to infer and validate fields (Abstract, Theme, Format, Geographic Area, Keywords)
 - Batch processing with start/stop controls and phase selection
 - Real-time CSV generation and download
@@ -191,12 +192,24 @@ This dual-phase approach helps address inconsistent folder structures and ensure
    - Monitor progress in real-time
    - Download the resulting CSV at any time
 
+8. **Tabbed Interface**: The application provides a tabbed interface that separates:
+   - **Main**: The primary data view and processing controls
+   - **Phase 1**: Shows files that still need initial metadata extraction
+   - **Phase 2**: Shows files that have completed Phase 1 but need metadata reconciliation
+
+9. **Batch Processing Control**: You can:
+   - Start processing all files at once
+   - Stop processing at any time
+   - Select which phase(s) to run (Phase 1, Phase 2, or both)
+   - Monitor progress with real-time counters
+
 ## Configuration
 
 - **OpenAI API Key**: Set it directly in the application UI (the key is validated before use)
 - **Advanced Settings**: Access additional settings in the "Advanced Settings" section of the sidebar
   - OpenAI model settings (model, temperature, max tokens)
-  - Extraction prompts for AI fields
+  - Phase 1 Extraction Prompt: View the prompt template used for initial metadata extraction
+  - Phase 2 Reconciliation Prompt: View the prompt template used for metadata verification and correction
   - Folder structure patterns
 
 ### Custom Folder Structure Configuration
@@ -228,6 +241,7 @@ The application generates a CSV file with the following columns:
 - Title
 - Abstract
 - Preview Image
+- Folder Images - lists all image files found in the article folder (JPG, PNG, etc.)
 - Magazine
 - Magazine No.
 - Theme
@@ -259,4 +273,31 @@ You can customize the prompt in the `config.yaml` file to adjust the extraction 
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## User Interface
+
+The application features a user-friendly Streamlit interface with the following components:
+
+### Main Interface
+
+1. **Sidebar Controls**:
+   - OpenAI API key input with validation
+   - Upload method selection (ZIP or Directory)
+   - Advanced settings access
+
+2. **Main Processing Area**:
+   - Tabbed interface (Main/Phase 1/Phase 2)
+   - Batch processing controls
+   - Progress indicators
+   - File processing status
+   - CSV download button
+
+3. **File Processing**:
+   - Individual file processing controls
+   - Preview of extracted metadata
+   - Comparison between original and corrected metadata (after Phase 2)
+   - Display of article images (shows one representative image when multiple are available)
+
+*Note: Add screenshots of your application to make the documentation more user-friendly.*
+

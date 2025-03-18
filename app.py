@@ -21,7 +21,7 @@ dotenv.load_dotenv()
 
 # Import custom modules
 from file_manager import load_config, process_zip_file, process_directory
-from docx_parser import extract_docx_content, save_preview_image
+from docx_parser import extract_docx_content, save_preview_image, find_folder_images
 from ai_extractor import extract_fields_from_text, batch_extract_fields, setup_openai_api
 from ai_reconciler import reconcile_metadata, batch_reconcile_metadata
 from csv_manager import create_dataframe, save_to_csv, update_dataframe, read_csv
@@ -99,7 +99,11 @@ def display_image(image_base64):
             # Open image using PIL
             image = Image.open(io.BytesIO(image_bytes))
             
-            # Display the image
+            # Resize image to reduce memory footprint
+            max_size = (200, 200)
+            image.thumbnail(max_size, Image.LANCZOS)
+            
+            # Display the image with limited width
             st.image(image, width=200)
         except Exception as e:
             st.error(f"Error displaying image: {e}")
@@ -127,7 +131,31 @@ def process_file(file_data: Dict[str, Any], df: pd.DataFrame, config: Dict[str, 
             text_content, preview_image = extract_docx_content(file_data_copy['full_path'])
             
             file_data_copy['text_content'] = text_content
-            file_data_copy['preview_image'] = preview_image
+            file_data_copy['preview_image'] = preview_image  # Keep for UI display only
+            
+            # Find images in the document folder and store their paths
+            folder_images = find_folder_images(file_data_copy['full_path'])
+            file_data_copy['folder_images'] = folder_images
+            
+            # Set preview_image_path based on available images
+            if folder_images:
+                file_data_copy['preview_image_path'] = folder_images[0]
+            else:
+                file_data_copy['preview_image_path'] = "[embedded image in document]"
+            
+            # If no preview image from the document but folder images exist, use the first folder image for display
+            if (not preview_image or preview_image == "") and folder_images:
+                try:
+                    # Read the first image and convert to base64 for display
+                    with open(folder_images[0], 'rb') as img_file:
+                        img_data = img_file.read()
+                        img_base64 = base64.b64encode(img_data).decode('utf-8')
+                        img_ext = os.path.splitext(folder_images[0])[1].lower().replace('.', '')
+                        if img_ext == 'jpg':
+                            img_ext = 'jpeg'  # Adjust extension for MIME type
+                        file_data_copy['preview_image'] = f"data:image/{img_ext};base64,{img_base64}"
+                except Exception as e:
+                    print(f"Error using folder image as preview: {e}")
         
         # Phase 1: Extract fields using OpenAI API (if not already done or if explicitly re-running Phase 1)
         phase1_needed = not all(k in file_data_copy for k in ['abstract', 'theme', 'format', 'geographic_area', 'keywords'])
@@ -330,6 +358,9 @@ def batch_processor():
     
     print(f"Starting batch processor with {total_queue_size} files in queue")
     
+    # Get the initial queue size for progress tracking
+    initial_queue_size = processing_queue.qsize() 
+    
     while (not stop_processing.is_set() and not processing_queue.empty()):
         try:
             # Get the next file to process (with a timeout)
@@ -343,7 +374,15 @@ def batch_processor():
             current_file_name = file_data.get('title', 'Unknown')
             current_phase = f"Phase {phase}"
             
-            print(f"Processing file: {current_file_name} (Phase {phase})")
+            # Update progress percentage more precisely based on queue size
+            # This is crucial for accurate progress tracking
+            remaining = processing_queue.qsize()
+            processed = initial_queue_size - remaining
+            progress_pct = min(0.99, processed / initial_queue_size)  # Cap at 99% until fully complete
+            progress_percentage = progress_pct
+            processed_count = processed
+            
+            print(f"Processing file: {current_file_name} (Phase {phase}) - Progress: {progress_pct*100:.1f}%")
             
             try:
                 # Process the file
@@ -375,14 +414,6 @@ def batch_processor():
             # Mark this task as done
             processing_queue.task_done()
             
-            # Increment processed count
-            processed_count += 1
-            
-            # Update progress percentage more precisely
-            if total_queue_size > 0:
-                progress_pct = min(1.0, processed_count / total_queue_size)
-                progress_percentage = progress_pct
-            
         except queue.Empty:
             # No items in the queue, just continue
             continue
@@ -398,6 +429,10 @@ def batch_processor():
                 processing_queue.task_done()
             except:
                 pass
+    
+    # Set to 100% when completely done
+    progress_percentage = 1.0
+    processed_count = initial_queue_size
     
     # Ensure final state is saved
     # Force one last reload of the CSV at the end of batch processing
@@ -456,7 +491,8 @@ def update_ui_from_processing_thread():
                         for col in df.columns:
                             if col in ['abstract', 'theme', 'format', 'geographic_area', 'keywords',
                                       'original_magazine', 'original_magazine_no', 'original_author', 
-                                      'original_title', 'magazine', 'magazine_no', 'author', 'title']:
+                                      'original_title', 'magazine', 'magazine_no', 'author', 'title',
+                                      'preview_image_path', 'folder_images']:
                                 file_data[col] = row[col]
                         st.session_state.file_data_list[i] = file_data
                         
@@ -765,16 +801,24 @@ with tab_extraction:
                     progress_bar = st.progress(progress_pct)
                 
                 with col2:
-                    st.text(f"{processed_files} of {total_queue_size} files")
+                    if total_queue_size > 0:
+                        st.text(f"{processed_files} of {total_queue_size} files")
+                        st.text(f"{progress_pct*100:.1f}% complete")
+                    else:
+                        st.text("Processing...")
                 
-                # Show currently processing file with more details
-                if st.session_state.current_processing_file:
-                    status_col1, status_col2 = st.columns([1, 1])
-                    with status_col1:
-                        st.text(f"Currently processing: {st.session_state.current_processing_file}")
-                    with status_col2:
-                        if st.session_state.current_processing_phase:
-                            st.text(f"Current phase: {st.session_state.current_processing_phase}")
+                # Show processing status with more details
+                success_count = getattr(st.session_state, 'last_batch_success_count', 0)
+                error_count = getattr(st.session_state, 'last_batch_error_count', 0)
+                status_text = f"Processed: {success_count} success, {error_count} errors"
+                
+                status_col1, status_col2 = st.columns([1, 1])
+                with status_col1:
+                    if st.session_state.current_processing_file:
+                        st.text(f"File: {st.session_state.current_processing_file}")
+                with status_col2:
+                    if st.session_state.current_processing_phase:
+                        st.text(f"{st.session_state.current_processing_phase} - {status_text}")
             else:
                 # When not processing, show a summary of files that need processing
                 phase1_files = [f for f in st.session_state.file_data_list 
@@ -895,8 +939,13 @@ if st.session_state.file_data_list:
                 save_to_csv(df, CSV_PATH)
             st.session_state.dataframe = df
         
-        # Display the DataFrame
-        st.dataframe(df, use_container_width=True)
+        # Display a limited view of the DataFrame to reduce memory usage
+        display_columns = ['title', 'magazine', 'magazine_no', 'author', 'theme', 'format', 'geographic_area']
+        if all(col in df.columns for col in display_columns):
+            st.dataframe(df[display_columns], use_container_width=True)
+        else:
+            # Fall back to showing all columns if the expected columns aren't available
+            st.dataframe(df, use_container_width=True)
         
         # Download button for the CSV
         if os.path.exists(CSV_PATH) and os.path.getsize(CSV_PATH) > 0:
@@ -916,7 +965,11 @@ if st.session_state.file_data_list:
             df = create_dataframe(st.session_state.file_data_list)
             save_to_csv(df, CSV_PATH)
             st.session_state.dataframe = df
-            st.dataframe(df, use_container_width=True)
+            # Use the same display columns pattern for recovery
+            if 'display_columns' in locals() and all(col in df.columns for col in display_columns):
+                st.dataframe(df[display_columns], use_container_width=True)
+            else:
+                st.dataframe(df, use_container_width=True)
             st.success("Successfully recovered data display.")
         except Exception as recovery_error:
             st.error(f"Unable to recover data display: {recovery_error}")
@@ -925,16 +978,67 @@ if st.session_state.file_data_list:
     tab_all, tab_phase1, tab_phase2, tab_complete = st.tabs(["All Files", "Phase 1 Needed", "Phase 2 Needed", "Completed"])
     
     with tab_all:
-        for i, file_data in enumerate(st.session_state.file_data_list):
+        # Add pagination to limit the number of displayed files
+        page_size = 10  # Show only 10 items per page
+        total_files = len(st.session_state.file_data_list)
+        total_pages = (total_files + page_size - 1) // page_size  # Ceiling division
+        
+        if total_pages > 1:
+            page = st.number_input("Page", min_value=1, max_value=total_pages, value=1)
+            st.write(f"Showing page {page} of {total_pages} ({total_files} total files)")
+        else:
+            page = 1
+        
+        # Calculate the slice of files to display
+        start_idx = (page - 1) * page_size
+        end_idx = min(start_idx + page_size, total_files)
+        
+        # Only display files for the current page
+        for i, file_data in enumerate(st.session_state.file_data_list[start_idx:end_idx], start=start_idx):
             with st.expander(f"{file_data['title']} ({file_data['magazine']} {file_data['magazine_no']} - {file_data['author']})"):
                 col1, col2 = st.columns([1, 3])
                 
                 with col1:
                     # Display preview image if available
-                    if 'preview_image' in file_data and file_data['preview_image']:
+                    if 'preview_image' in file_data and file_data['preview_image'] and file_data['preview_image'].startswith('data:'):
+                        # Display base64 image (legacy support)
                         display_image(file_data['preview_image'])
+                    elif 'preview_image_path' in file_data and file_data['preview_image_path'] and file_data['preview_image_path'] != "[embedded image in document]":
+                        # Display image from file path
+                        try:
+                            img = Image.open(file_data['preview_image_path'])
+                            img.thumbnail((200, 200), Image.LANCZOS)
+                            st.image(img, width=200)
+                        except Exception as e:
+                            st.error(f"Error loading image: {e}")
+                    # If no preview image but folder images exist, display the first folder image
+                    elif 'folder_images' in file_data and file_data['folder_images']:
+                        try:
+                            # If it's already a list, use first item
+                            if isinstance(file_data['folder_images'], list) and file_data['folder_images']:
+                                # Load and display the first image
+                                try:
+                                    img = Image.open(file_data['folder_images'][0])
+                                    img.thumbnail((200, 200), Image.LANCZOS)
+                                    st.image(img, width=200)
+                                    st.caption(f"1 of {len(file_data['folder_images'])} images")
+                                except Exception as e:
+                                    st.error(f"Error displaying folder image: {e}")
+                            # If it's a string (from CSV), try to parse it
+                            elif isinstance(file_data['folder_images'], str) and file_data['folder_images']:
+                                folder_images = file_data['folder_images'].split('|')
+                                if folder_images:
+                                    try:
+                                        img = Image.open(folder_images[0])
+                                        img.thumbnail((200, 200), Image.LANCZOS)
+                                        st.image(img, width=200)
+                                        st.caption(f"1 of {len(folder_images)} images")
+                                    except Exception as e:
+                                        st.error(f"Error displaying folder image from CSV: {e}")
+                        except Exception as e:
+                            st.error(f"Error processing folder images: {e}")
                     else:
-                        st.text("No preview image")
+                        st.text("No images available")
                 
                 with col2:
                     # Display file path
@@ -1102,7 +1206,21 @@ if st.session_state.file_data_list:
         
         if phase1_files:
             st.text(f"{len(phase1_files)} files need Phase 1 extraction")
-            for file_data in phase1_files:
+            
+            # Add pagination for Phase 1 files
+            p1_page_size = 20
+            p1_total_pages = (len(phase1_files) + p1_page_size - 1) // p1_page_size
+            
+            if p1_total_pages > 1:
+                p1_page = st.number_input("Phase 1 Page", min_value=1, max_value=p1_total_pages, value=1, key="p1_page")
+                p1_start = (p1_page - 1) * p1_page_size
+                p1_end = min(p1_start + p1_page_size, len(phase1_files))
+                st.write(f"Showing {p1_start+1}-{p1_end} of {len(phase1_files)} files")
+                display_files = phase1_files[p1_start:p1_end]
+            else:
+                display_files = phase1_files
+                
+            for file_data in display_files:
                 st.text(f"{file_data['title']} ({file_data['magazine']} {file_data['magazine_no']} - {file_data['author']})")
         else:
             st.success("All files have completed Phase 1 extraction!")
@@ -1115,7 +1233,21 @@ if st.session_state.file_data_list:
         
         if phase2_files:
             st.text(f"{len(phase2_files)} files need Phase 2 reconciliation")
-            for file_data in phase2_files:
+            
+            # Add pagination for Phase 2 files
+            p2_page_size = 20
+            p2_total_pages = (len(phase2_files) + p2_page_size - 1) // p2_page_size
+            
+            if p2_total_pages > 1:
+                p2_page = st.number_input("Phase 2 Page", min_value=1, max_value=p2_total_pages, value=1, key="p2_page")
+                p2_start = (p2_page - 1) * p2_page_size
+                p2_end = min(p2_start + p2_page_size, len(phase2_files))
+                st.write(f"Showing {p2_start+1}-{p2_end} of {len(phase2_files)} files")
+                display_files = phase2_files[p2_start:p2_end]
+            else:
+                display_files = phase2_files
+                
+            for file_data in display_files:
                 st.text(f"{file_data['title']} ({file_data['magazine']} {file_data['magazine_no']} - {file_data['author']})")
         else:
             st.success("All extracted files have been reconciled!")
@@ -1139,7 +1271,20 @@ if st.session_state.file_data_list:
             if corrected_files:
                 st.text(f"{len(corrected_files)} files had metadata corrections")
             
-            for file_data in complete_files:
+            # Add pagination for completed files
+            c_page_size = 20
+            c_total_pages = (len(complete_files) + c_page_size - 1) // c_page_size
+            
+            if c_total_pages > 1:
+                c_page = st.number_input("Completed Page", min_value=1, max_value=c_total_pages, value=1, key="c_page")
+                c_start = (c_page - 1) * c_page_size
+                c_end = min(c_start + c_page_size, len(complete_files))
+                st.write(f"Showing {c_start+1}-{c_end} of {len(complete_files)} files")
+                display_files = complete_files[c_start:c_end]
+            else:
+                display_files = complete_files
+            
+            for file_data in display_files:
                 has_corrections = (file_data['original_magazine'] != file_data['magazine'] or
                                   file_data['original_magazine_no'] != file_data['magazine_no'] or
                                   file_data['original_author'] != file_data['author'] or
@@ -1162,6 +1307,19 @@ with tab_analysis:
     You can view statistics, validate data quality, and explore articles by magazine, issue, and theme.
     """)
     
+    # Add a button to recalculate stats and clear cache
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        if st.button("🔄 Recalculate Stats", help="Refresh all statistics with the latest data"):
+            # Clear the cached data to force recalculation
+            st.cache_data.clear()
+            st.success("Statistics recalculated with latest data!")
+            st.rerun()
+    with col2:
+        if os.path.exists(CSV_PATH):
+            last_modified = os.path.getmtime(CSV_PATH)
+            st.info(f"Data last updated: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_modified))}")
+    
     # Check if CSV file exists
     if not os.path.exists(CSV_PATH):
         st.warning("No CSV data found. Please extract some data first.")
@@ -1170,18 +1328,35 @@ with tab_analysis:
         @st.cache_data
         def load_analysis_data():
             """Load data from CSV and perform basic preprocessing"""
-            df = pd.read_csv(CSV_PATH)
-            
-            # Normalize magazine_no to numeric when possible
-            df['magazine_no_numeric'] = pd.to_numeric(df['magazine_no'], errors='coerce')
-            
-            return df
+            try:
+                df = pd.read_csv(CSV_PATH)
+                
+                # Normalize magazine_no to numeric when possible
+                df['magazine_no_numeric'] = pd.to_numeric(df['magazine_no'], errors='coerce')
+                
+                return df
+            except Exception as e:
+                st.error(f"Error loading CSV data: {str(e)}")
+                return None
         
         # Load the data
         df = load_analysis_data()
         
-        if df is None or len(df) == 0:
+        if df is None:
+            st.error("Failed to load the CSV data. The file might be corrupt or empty.")
+            st.stop()
+        
+        if len(df) == 0:
             st.warning("The CSV file exists but contains no data. Please extract some articles first.")
+            st.stop()
+            
+        # Check for required columns
+        required_cols = ['magazine', 'magazine_no', 'author', 'title']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        
+        if missing_cols:
+            st.error(f"CSV data is missing required columns: {', '.join(missing_cols)}")
+            st.info("Process files with extraction to create properly formatted data.")
             st.stop()
         
         # Create tabs for different analysis views
@@ -1194,7 +1369,14 @@ with tab_analysis:
         ])
         
         with overview_tab:
-            st.subheader("Data Overview")
+            st.subheader("📊 Data Overview")
+            
+            st.markdown("""
+            This tab provides a high-level summary of all the extracted magazine data, including 
+            counts of articles, magazines, themes, and distribution charts.
+            """)
+            
+            st.markdown("---")
             
             # Display basic stats
             col1, col2, col3 = st.columns(3)
@@ -1210,9 +1392,17 @@ with tab_analysis:
             with col1:
                 st.metric("Unique Authors", df['author'].nunique())
             with col2:
-                st.metric("Themes", df['theme'].nunique())
+                # Check if theme column exists before accessing it
+                if 'theme' in df.columns:
+                    st.metric("Themes", df['theme'].nunique())
+                else:
+                    st.metric("Themes", "N/A")
             with col3:
-                st.metric("Formats", df['format'].nunique())
+                # Check if format column exists before accessing it 
+                if 'format' in df.columns:
+                    st.metric("Formats", df['format'].nunique())
+                else:
+                    st.metric("Formats", "N/A")
             
             # Articles per magazine
             st.subheader("Articles per Magazine")
@@ -1282,26 +1472,33 @@ with tab_analysis:
             
             # Theme distribution
             st.subheader("Theme Distribution")
-            theme_counts = df['theme'].value_counts()
             
-            fig, ax = plt.subplots(figsize=(8, 8))
-            wedges, texts, autotexts = ax.pie(
-                theme_counts, 
-                labels=theme_counts.index, 
-                autopct='%1.1f%%',
-                textprops={'fontsize': 9}
-            )
-            ax.axis('equal')
-            plt.tight_layout()
-            
-            st.pyplot(fig)
+            if 'theme' in df.columns:
+                theme_counts = df['theme'].value_counts()
+                
+                fig, ax = plt.subplots(figsize=(8, 8))
+                wedges, texts, autotexts = ax.pie(
+                    theme_counts, 
+                    labels=theme_counts.index, 
+                    autopct='%1.1f%%',
+                    textprops={'fontsize': 9}
+                )
+                ax.axis('equal')
+                plt.tight_layout()
+                
+                st.pyplot(fig)
+            else:
+                st.info("Theme information not available. Process some files with Phase 1 extraction first.")
             
         with explorer_tab:
-            st.subheader("Magazine Explorer")
+            st.subheader("🔍 Magazine Explorer")
             
-            st.write("""
-            Explore articles by magazine and issue number.
+            st.markdown("""
+            Explore articles by magazine and issue number. Select a magazine and issue to view all 
+            articles within that issue, including their metadata and content details.
             """)
+            
+            st.markdown("---")
             
             # Magazine and issue selection
             col1, col2 = st.columns(2)
@@ -1332,26 +1529,45 @@ with tab_analysis:
             with col2:
                 st.metric("Unique Authors", issue_df['author'].nunique())
             with col3:
-                st.metric("Themes Covered", issue_df['theme'].nunique())
+                if 'theme' in issue_df.columns:
+                    st.metric("Themes Covered", issue_df['theme'].nunique())
+                else:
+                    st.metric("Themes Covered", "N/A")
             
             # Display articles
             st.subheader("Articles in this issue")
             
             for i, (_, article) in enumerate(issue_df.iterrows(), 1):
                 with st.expander(f"{i}. {article['title']} (by {article['author']})"):
-                    # Display article details
-                    st.write(f"**Abstract:** {article['abstract']}")
-                    st.write(f"**Theme:** {article['theme']}")
-                    st.write(f"**Format:** {article['format']}")
-                    st.write(f"**Geographic Area:** {article['geographic_area']}")
-                    st.write(f"**Keywords:** {article['keywords']}")
+                    # Display article details with careful column checking 
+                    try:
+                        if 'abstract' in article.index and not pd.isna(article['abstract']):
+                            st.write(f"**Abstract:** {article['abstract']}")
+                        
+                        if 'theme' in article.index and not pd.isna(article['theme']):
+                            st.write(f"**Theme:** {article['theme']}")
+                        
+                        if 'format' in article.index and not pd.isna(article['format']):
+                            st.write(f"**Format:** {article['format']}")
+                        
+                        if 'geographic_area' in article.index and not pd.isna(article['geographic_area']):
+                            st.write(f"**Geographic Area:** {article['geographic_area']}")
+                        
+                        if 'keywords' in article.index and not pd.isna(article['keywords']):
+                            st.write(f"**Keywords:** {article['keywords']}")
+                    except Exception as e:
+                        st.error(f"Error displaying article details: {e}")
+                        st.write("Some metadata may be missing for this article.")
             
         with browser_tab:
-            st.subheader("Article Browser")
+            st.subheader("🔎 Article Browser")
             
-            st.write("""
-            Browse and search for specific articles.
+            st.markdown("""
+            Search and filter articles across all magazines. Use the search box to find specific content
+            in titles, abstracts, or keywords, and filter by theme to narrow down results.
             """)
+            
+            st.markdown("---")
             
             # Search and filter options
             col1, col2 = st.columns(2)
@@ -1361,19 +1577,31 @@ with tab_analysis:
             
             with col2:
                 # Theme filter
-                themes = ["All Themes"] + sorted(df['theme'].unique().tolist())
-                selected_theme = st.selectbox("Filter by Theme", themes)
+                if 'theme' in df.columns:
+                    # Convert themes to strings before sorting to avoid type comparison issues
+                    themes = ["All Themes"] + sorted(df['theme'].astype(str).unique().tolist())
+                    selected_theme = st.selectbox("Filter by Theme", themes)
+                else:
+                    st.warning("Theme information not available")
+                    selected_theme = "All Themes"
             
             # Apply filters
             filtered_df = df.copy()
             
             # Apply theme filter
-            if selected_theme != "All Themes":
-                filtered_df = filtered_df[filtered_df['theme'] == selected_theme]
+            if selected_theme != "All Themes" and 'theme' in filtered_df.columns:
+                # Convert to string for safe comparison
+                filtered_df['theme_str'] = filtered_df['theme'].astype(str)
+                filtered_df = filtered_df[filtered_df['theme_str'] == selected_theme]
             
             # Apply search filter
             if search_term:
-                # Search in title, abstract and keywords
+                # Make sure all required columns exist
+                for col in ['title', 'abstract', 'keywords']:
+                    if col not in filtered_df.columns:
+                        filtered_df[col] = ''  # Add empty column if missing
+                
+                # Apply the search filter
                 title_match = filtered_df['title'].str.contains(search_term, case=False, na=False)
                 abstract_match = filtered_df['abstract'].str.contains(search_term, case=False, na=False)
                 keywords_match = filtered_df['keywords'].str.contains(search_term, case=False, na=False)
@@ -1388,7 +1616,7 @@ with tab_analysis:
             num_pages = max(1, (len(filtered_df) + articles_per_page - 1) // articles_per_page)
             
             if len(filtered_df) > 0:
-                page_num = st.number_input("Page", min_value=1, max_value=num_pages, value=1)
+                page_num = st.number_input("Page", min_value=1, max_value=num_pages, value=1, key="browser_page")
                 
                 # Calculate start and end indices
                 start_idx = (page_num - 1) * articles_per_page
@@ -1400,22 +1628,39 @@ with tab_analysis:
                 # Display articles
                 for i, (_, article) in enumerate(page_df.iterrows(), start_idx + 1):
                     with st.expander(f"{i}. {article['title']} ({article['magazine']} {article['magazine_no']})"):
-                        # Display article details
-                        st.write(f"**Author:** {article['author']}")
-                        st.write(f"**Abstract:** {article['abstract']}")
-                        st.write(f"**Theme:** {article['theme']}")
-                        st.write(f"**Format:** {article['format']}")
-                        st.write(f"**Geographic Area:** {article['geographic_area']}")
-                        st.write(f"**Keywords:** {article['keywords']}")
+                        # Display article details with careful column checking
+                        try:
+                            st.write(f"**Author:** {article['author']}")
+                            
+                            if 'abstract' in article.index and not pd.isna(article['abstract']):
+                                st.write(f"**Abstract:** {article['abstract']}")
+                            
+                            if 'theme' in article.index and not pd.isna(article['theme']):
+                                st.write(f"**Theme:** {article['theme']}")
+                                
+                            if 'format' in article.index and not pd.isna(article['format']):
+                                st.write(f"**Format:** {article['format']}")
+                                
+                            if 'geographic_area' in article.index and not pd.isna(article['geographic_area']):
+                                st.write(f"**Geographic Area:** {article['geographic_area']}")
+                                
+                            if 'keywords' in article.index and not pd.isna(article['keywords']):
+                                st.write(f"**Keywords:** {article['keywords']}")
+                        except Exception as e:
+                            st.error(f"Error displaying article details: {e}")
+                            st.write("Some metadata may be missing for this article.")
             else:
                 st.info("No articles found matching your criteria.")
                 
         with validation_tab:
-            st.subheader("Data Validation")
+            st.subheader("✓ Data Validation")
             
-            st.write("""
-            Check data quality and validate metadata.
+            st.markdown("""
+            Check data quality and validate metadata against expected values and ranges. This tab highlights 
+            potential issues with magazine names, issue numbers, article counts, and missing data.
             """)
+            
+            st.markdown("---")
             
             # Define expected ranges and values
             expected_ranges = {
@@ -1557,11 +1802,18 @@ with tab_analysis:
                     st.success("✅ No null values found in required fields")
                     
         with theme_tab:
-            st.subheader("Theme Analysis")
+            st.subheader("📈 Theme Analysis")
             
-            st.write("""
-            Analyze themes and their distribution across magazines and issues.
+            st.markdown("""
+            Analyze themes and their distribution across magazines and issues. View overall theme distribution,
+            themes by specific magazine, and track theme trends across different issues.
             """)
+            
+            st.markdown("---")
+            
+            if 'theme' not in df.columns:
+                st.info("Theme information is not available. Process files with Phase 1 extraction first.")
+                st.stop()
             
             # Overall theme distribution
             st.subheader("Overall Theme Distribution")
@@ -1590,9 +1842,17 @@ with tab_analysis:
             # Filter to selected magazine
             magazine_df = df[df['magazine'] == magazine]
             
+            if len(magazine_df) == 0:
+                st.warning(f"No articles found for magazine: {magazine}")
+                st.stop()
+            
             # Calculate theme counts for this magazine
             magazine_theme_counts = magazine_df['theme'].value_counts()
             
+            if len(magazine_theme_counts) == 0:
+                st.warning(f"No theme data available for {magazine}")
+                st.stop()
+                
             # Create a pie chart
             fig, ax = plt.subplots(figsize=(8, 8))
             wedges, texts, autotexts = ax.pie(
@@ -1610,22 +1870,31 @@ with tab_analysis:
             st.subheader("Theme Trends Across Issues")
             
             # Get top 5 themes for this magazine
-            top_themes = magazine_df['theme'].value_counts().head(5).index.tolist()
+            # Convert to strings to ensure type consistency
+            magazine_df['theme_str'] = magazine_df['theme'].astype(str)
+            top_themes = magazine_df['theme_str'].value_counts().head(5).index.tolist()
             
             # Let user select themes to display
             selected_themes = st.multiselect(
                 "Select Themes to Display",
-                sorted(magazine_df['theme'].unique()),
+                sorted(magazine_df['theme'].astype(str).unique()),
                 default=top_themes[:3] if top_themes else None
             )
             
             if selected_themes:
-                # Filter to selected themes
-                theme_df = magazine_df[magazine_df['theme'].isin(selected_themes)]
+                # Filter to selected themes using string comparison for consistency
+                theme_df = magazine_df[magazine_df['theme_str'].isin(selected_themes)]
+                
+                if len(theme_df) == 0:
+                    st.warning("No data available for the selected themes")
+                    st.stop()
                 
                 # Group by issue and theme
                 try:
                     theme_issue_counts = theme_df.groupby(['magazine_no', 'theme']).size().unstack().fillna(0)
+                    
+                    if len(theme_issue_counts) == 0:
+                        raise ValueError("Not enough data")
                     
                     # Sort by issue number
                     theme_issue_counts['issue_numeric'] = pd.to_numeric(theme_issue_counts.index, errors='coerce')
@@ -1645,7 +1914,7 @@ with tab_analysis:
                     ax.grid(True, linestyle='--', alpha=0.7)
                     
                     st.pyplot(fig)
-                except:
-                    st.warning("Not enough data to create theme trends chart for the selected themes.")
+                except Exception as e:
+                    st.warning(f"Not enough data to create theme trends chart for the selected themes. Error: {str(e)}")
             else:
-                st.info("Please select at least one theme to display.") 
+                st.info("Please select at least one theme to display.")

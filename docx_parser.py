@@ -1,7 +1,7 @@
 import os
 import io
 import base64
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
 from docx import Document
 from PIL import Image
 
@@ -94,4 +94,32 @@ def save_preview_image(image_base64: str, output_dir: str, file_name: str) -> st
     
     except Exception as e:
         print(f"Error saving preview image: {e}")
-        return "" 
+        return ""
+
+def find_folder_images(file_path: str) -> List[str]:
+    """
+    Find all image files in the same folder as the DOCX file.
+    
+    Args:
+        file_path: Path to the DOCX file
+        
+    Returns:
+        List of full paths to image files in the folder
+    """
+    folder_path = os.path.dirname(file_path)
+    image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp')
+    images = []
+    
+    try:
+        for file in os.listdir(folder_path):
+            if file.lower().endswith(image_extensions):
+                image_path = os.path.join(folder_path, file)
+                images.append(image_path)
+                
+        # Sort images by name to ensure consistent order
+        images.sort()
+        
+        return images
+    except Exception as e:
+        print(f"Error scanning folder for images: {e}")
+        return [] 

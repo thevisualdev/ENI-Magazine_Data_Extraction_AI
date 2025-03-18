@@ -41,7 +41,7 @@ prompts:
     
     2. **Magazine Number**: The issue number should be extracted from either:
        a) The article text itself, if mentioned
-       b) The file path, where it's often included in patterns like:
+       b) The file path (more likely!) where it's often included in patterns like:
           - Orizzonti_62_x_web (here "62" is the issue number)
           - WE_60 (here "60" is the issue number)
           - We 54 (here "54" is the issue number)
@@ -61,17 +61,17 @@ prompts:
        - Industry Insights
        - Social Impact
        - Culture & Society
-
+       - Other (propose a new theme)
     7. **Format**: Identify the content format from these options:
        - Article
        - Interview
        - Report
-       - Case Study
        - Analysis
        - Commentary
        - Photo Gallery
        - Infographic
        - News Brief
+       - Other (propose a new format, only if none of the listed formats are appropriate)
 
     8. **Geographic Area**: Identify the specific geographic region(s) discussed in the article. Use standardized names (e.g., "Northern Italy", "Gulf of Mexico", "Southeast Asia") and return "Not Specified" if absent.
     9. **Keywords**: Provide 3-5 relevant keywords describing the article, in lowercase and separated by commas.
@@ -93,9 +93,16 @@ prompts:
 
     **IMPORTANT**: Verify the metadata against the article content with special attention to:
 
-    1. **Magazine**: Must be either "Orizzonti" or "WE" (case sensitive). The folder suggests "{magazine}" but you should verify this from the content. ENI only publishes these two magazines, so any other magazine name is incorrect.
+    1. **Magazine**: Must be either "Orizzonti" or "WE" (case sensitive). The folder suggests "{magazine}" but you should verify this from the content. ENI only publishes these two magazines, so any other magazine name is incorrect. 
+    When in doubt remember that  "WE World Energy è il nostro magazine internazionale sul mondo dell energia che, grazie all esperienza che abbiamo accumulato nel corso degli anni, oggi si pone come voce autorevole nel panorama della comunicazione in ambito energetico" and "“Orizzonti, sguardi nel futuro” è il nostro magazine dedicato alla Basilicata e anche alle altre realtà nazionali di nostro interesse. Dal 2025 “Orizzonti” diventa bimestrale e ospita, sempre di più, articoli e contributori che trattano tematiche di scenario nazionale e internazionale.".
 
-    2. **Magazine Number**: Should be a numeric issue number. The folder suggests "{magazine_no}" but you should verify if the article mentions a different issue number.
+    2. **Magazine Number**: Should be a numeric issue number. The folder suggests "{magazine_no}" but you should verify if the folder structure has a different issue number, The issue number should be extracted from either:
+       a) The article text itself, if mentioned
+       b) The file path (more likely!) where it's often included in patterns like:
+          - Orizzonti_62_x_web (here "62" is the issue number)
+          - WE_60 (here "60" is the issue number)
+          - We 54 (here "54" is the issue number)
+       If you can't find the issue number in either the article or file path, only then return "Not Specified".
 
     3. **Author**: Verify if the author name from the folder ("{author}") matches the author mentioned in the article content. Use proper capitalization.
 
@@ -103,7 +110,7 @@ prompts:
 
     5. **Abstract**: Provide a concise summary (1-2 sentences) that captures the key insights. The summary should be in sentence case.
 
-    6. **Theme**: Select the most appropriate primary theme from the following list (return exactly one, using the list's formatting):
+    6. **Theme**: Select the most appropriate primary theme from the following list or propose a new one if none of the listed themes are appropriate (return exactly one, using the list's formatting):
        - Energy Transition
        - Sustainability
        - Innovation & Technology
@@ -114,18 +121,19 @@ prompts:
        - Industry Insights
        - Social Impact
        - Culture & Society
+       - Other (propose a new theme)
 
     7. **Format**: Identify the content format from these options:
        - Article
        - Interview
        - Report
-       - Case Study
        - Analysis
        - Commentary
        - Photo Gallery
        - Infographic
        - News Brief
-
+       - Other (propose a new format, only if none of the listed formats are appropriate)
+       
     8. **Geographic Area**: Identify the specific geographic region(s) discussed in the article. Use standardized names (e.g., "Northern Italy", "Gulf of Mexico", "Southeast Asia") and return "Not Specified" if absent.
 
     9. **Keywords**: Provide 3-5 relevant keywords describing the article, in lowercase and separated by commas.
