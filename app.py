@@ -13,8 +13,33 @@ from typing import List, Dict, Any, Optional, Tuple
 import dotenv
 import numpy as np
 import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
 from collections import Counter, defaultdict
 import re
+import datetime
+import asyncio
+import json
+import traceback
+import openai  # Add the import for OpenAI
+# Import visualization functions from our new module
+from visualizations import (
+    plot_magazine_distribution,
+    plot_language_distribution,
+    plot_theme_distribution,
+    plot_theme_pie,
+    plot_top_authors,
+    plot_issue_distribution,
+    plot_magazine_issues,
+    plot_format_distribution,
+    plot_format_pie,
+    plot_theme_trends,
+    show_overview_charts,
+    plot_format_by_magazine,
+    plot_theme_trends_plotly,
+    build_keyword_network,
+    render_keyword_network
+)
 
 # Load environment variables from .env file
 dotenv.load_dotenv()
@@ -33,6 +58,35 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Define the function before it's called
+def check_background_updates():
+    """Check if there are any updates from background threads"""
+    try:
+        if os.path.exists('temp_state.json'):
+            with open('temp_state.json', 'r') as f:
+                data = json.load(f)
+            
+            # Apply the updates to the session state
+            updates = data.get('updates', {})
+            for key, value in updates.items():
+                if key in ['file_data_list']:
+                    # Special handling for complex objects
+                    st.session_state[key] = value
+                else:
+                    # Simple values
+                    st.session_state[key] = value
+            
+            # Remove the temporary file
+            os.remove('temp_state.json')
+            
+            # Force a rerun to display the updated state
+            st.rerun()
+    except Exception as e:
+        print(f"Error checking for background updates: {str(e)}")
+
+# Check for background updates at the start of each rerun
+check_background_updates()
 
 # Create a temporary directory for image storage
 TEMP_DIR = os.path.join(tempfile.gettempdir(), "eni_magazine_images")
@@ -282,181 +336,295 @@ def process_file(file_data: Dict[str, Any], df: pd.DataFrame, config: Dict[str, 
         # Return the original file_data and DataFrame if there's an error
         return file_data, df
 
-def batch_processor():
-    """Background thread for batch processing files."""
-    global processing_queue, stop_processing, batch_success_count, batch_error_count
-    global current_file_name, current_phase, processed_count, progress_percentage
-    
-    # Reset counters at start
-    batch_success_count = 0
-    batch_error_count = 0
-    processed_count = 0
-    progress_percentage = 0.0
-    
-    # Get file_data_list and other variables from session state once at the beginning
+def batch_processor(params=None):
+    """Background worker thread to process files from the queue"""
     try:
-        # Make a local copy of data we need from session state
-        file_data_list = list(st.session_state.file_data_list) 
-        total_queue_size = st.session_state.total_queue_size
+        # Initialize key variables locally
+        print(f"Starting batch processor")
+        progress_percentage = 0.0
         
-        # Get API key from session state - this is the most reliable source
-        api_key = st.session_state.get('api_key', '')
-        print(f"API key from session state: {'Found' if api_key else 'Not found'}")
-    except Exception as e:
-        print(f"Error accessing session state in batch processor startup: {e}")
-        file_data_list = []
-        total_queue_size = processing_queue.qsize()
-        api_key = ''
-    
-    # Try to get API key from environment if not in session state
-    if not api_key:
-        api_key = os.environ.get('OPENAI_API_KEY', '')
-        print(f"API key from environment: {'Found' if api_key else 'Not found'}")
-    
-    config = load_config()
-    
-    # Ensure the API key is in the config for the batch processing
-    if api_key:
-        config['openai']['api_key'] = api_key
-        # Set it in the environment as well for maximum compatibility
-        os.environ['OPENAI_API_KEY'] = api_key
-        print(f"API key configured for batch processing - added to both config and environment")
-    else:
-        # Final fallback - check if config file has a key
-        api_key = config['openai'].get('api_key', '')
-        if api_key:
-            os.environ['OPENAI_API_KEY'] = api_key
-            print(f"Using API key from config file")
-        else:
+        # Extract parameters safely
+        if params is None:
+            params = {}
+        
+        api_key = params.get('api_key', None)
+        file_data_list = params.get('file_data_list', [])
+        total_queue_size = params.get('total_queue_size', 0)
+            
+        print(f"Batch processor started with {total_queue_size} files in queue")
+        
+        # Make sure we have an API key
+        if not api_key:
+            if 'OPENAI_API_KEY' in os.environ and os.environ['OPENAI_API_KEY']:
+                api_key = os.environ['OPENAI_API_KEY']
+                print(f"API key from environment: Found")
+            else:
+                print(f"API key from environment: Not found")
+        
+        if not api_key:
             print(f"WARNING: No API key found for batch processing!")
+            print(f"CRITICAL ERROR: No API key available. Batch processing cannot continue.")
+            return
             
-    # Double-check we have an API key - if not, we can't process files 
-    if not api_key:
-        print("CRITICAL ERROR: No API key available. Batch processing cannot continue.")
-        stop_processing.set()
-        return
-    
-    # Load existing data or create new DataFrame
-    df = read_csv(CSV_PATH) if os.path.exists(CSV_PATH) else pd.DataFrame()
-    if df is None or df.empty:
-        # If there was an error reading the CSV or it's empty, create a new DataFrame
+        # Load the configuration and set API key
+        config = load_config()
+        config['openai']['api_key'] = api_key
+        
+        # Load or create the DataFrame for the CSV file
         try:
+            csv_path = os.path.join("output", "extracted_data.csv")  # Use the correct path constant
+            if os.path.exists(csv_path):
+                df = pd.read_csv(csv_path)
+                if df.empty:
+                    df = create_dataframe(file_data_list)
+            else:
+                df = create_dataframe(file_data_list)
+                os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+                save_to_csv(df, csv_path)
+        except Exception as e:
+            print(f"Error loading/creating CSV: {str(e)}")
             df = create_dataframe(file_data_list)
-        except Exception as df_error:
-            print(f"Error creating DataFrame: {df_error}")
-            df = pd.DataFrame()
-        save_to_csv(df, CSV_PATH)
-    
-    # Track successful and failed files
-    success_count = 0
-    error_count = 0
-    
-    # Get total queue size
-    if total_queue_size == 0:
-        # If total_queue_size is not set, use queue size (less accurate but better than nothing)
-        total_queue_size = processing_queue.qsize() 
-    
-    print(f"Starting batch processor with {total_queue_size} files in queue")
-    
-    # Get the initial queue size for progress tracking
-    initial_queue_size = processing_queue.qsize() 
-    
-    while (not stop_processing.is_set() and not processing_queue.empty()):
-        try:
-            # Get the next file to process (with a timeout)
-            file_data, phase = processing_queue.get(timeout=1)
-            
-            if stop_processing.is_set():
-                processing_queue.task_done()
-                break
-                
-            # Update thread-safe variables for UI display
-            current_file_name = file_data.get('title', 'Unknown')
-            current_phase = f"Phase {phase}"
-            
-            # Update progress percentage more precisely based on queue size
-            # This is crucial for accurate progress tracking
-            remaining = processing_queue.qsize()
-            processed = initial_queue_size - remaining
-            progress_pct = min(0.99, processed / initial_queue_size)  # Cap at 99% until fully complete
-            progress_percentage = progress_pct
-            processed_count = processed
-            
-            print(f"Processing file: {current_file_name} (Phase {phase}) - Progress: {progress_pct*100:.1f}%")
-            
+        
+        # Process files from the queue
+        success_count = 0
+        error_count = 0
+        
+        # Create a dictionary to map file IDs to their index in file_data_list
+        file_id_map = {}
+        for i, fd in enumerate(file_data_list):
+            if 'id' in fd:
+                file_id_map[fd['id']] = i
+            elif 'full_path' in fd:
+                file_id_map[fd['full_path']] = i
+        
+        while not stop_processing.is_set() and not processing_queue.empty():
             try:
+                # Get the next file from the queue
+                file_data, phase = processing_queue.get()
+                
+                filename = file_data.get('filename', file_data.get('title', 'Unknown file'))
+                print(f"Processing {filename} (Phase {phase})")
+                
                 # Process the file
+                start_time = time.time()
+                
+                # Use the existing process_file function that handles text extraction correctly
                 reconcile = (phase == 2)
                 updated_file_data, df = process_file(file_data, df, config, reconcile=reconcile)
                 
-                # Store the updated file_data back to our local copy
-                for i, item in enumerate(file_data_list):
-                    if item.get('full_path') == updated_file_data.get('full_path'):
-                        file_data_list[i] = updated_file_data
-                        break
+                success = True  # If we got here without exception, consider it a success
                 
-                # Force reload from the CSV to ensure consistency
-                df_refreshed = read_csv(CSV_PATH)
-                if df_refreshed is not None:
-                    df = df_refreshed
+                # Calculate duration
+                duration = time.time() - start_time
                 
-                # Mark as success
-                success_count += 1
-                batch_success_count = success_count  # Update thread-safe counter
-                print(f"Successfully processed file: {current_file_name} (Phase {phase})")
+                # Update file status in file_data_list if we can find it
+                file_id = file_data.get('id')
+                file_path = file_data.get('full_path')
                 
-            except Exception as process_error:
-                # Count the error but continue processing
-                error_count += 1
-                batch_error_count = error_count  # Update thread-safe counter
-                print(f"Error processing file {current_file_name}: {process_error}")
-            
-            # Mark this task as done
-            processing_queue.task_done()
-            
-        except queue.Empty:
-            # No items in the queue, just continue
-            continue
-        except Exception as e:
-            print(f"Error in batch processor loop: {e}")
-            
-            # Count as error but continue processing other files
-            error_count += 1
-            batch_error_count = error_count  # Update thread-safe counter
-            
-            # Make sure we mark the task as done to avoid blocking
-            try:
+                # Try to find the file in our mapping
+                idx = None
+                if file_id and file_id in file_id_map:
+                    idx = file_id_map[file_id]
+                elif file_path and file_path in file_id_map:
+                    idx = file_id_map[file_path]
+                
+                if idx is not None:
+                    file_data_list[idx] = updated_file_data
+                
+                # Update the DataFrame
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                # Check if the file is already in the DataFrame
+                file_row = df[df['full_path'] == file_data.get('full_path', '')]
+                if not file_row.empty:
+                    df.loc[df['full_path'] == file_data.get('full_path', ''), 'Last Updated'] = timestamp
+                    df.loc[df['full_path'] == file_data.get('full_path', ''), 'Duration'] = f"{duration:.2f}s"
+                    df.loc[df['full_path'] == file_data.get('full_path', ''), 'Phase'] = phase
+                
+                # Update tracking variables
+                if success:
+                    success_count += 1
+                else:
+                    error_count += 1
+                
+                # Mark the task as done
                 processing_queue.task_done()
-            except:
-                pass
+                
+                # Update progress
+                processed_count = success_count + error_count
+                if total_queue_size > 0:
+                    progress_percentage = (processed_count / total_queue_size) * 100
+                
+                # Save the updated information periodically or after every 5 files
+                if processed_count % 5 == 0 or processing_queue.empty():
+                    try:
+                        # Save DataFrame to CSV
+                        save_to_csv(df, csv_path)
+                        
+                        # Update session state variables
+                        next_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(next_loop)
+                        next_loop.run_until_complete(update_session_state(processed_count, progress_percentage, file_data_list))
+                        next_loop.close()
+                    except Exception as e:
+                        print(f"Error saving progress: {str(e)}")
+            
+            except Exception as e:
+                print(f"Error processing file in batch: {str(e)}")
+                error_count += 1
+                processing_queue.task_done()
+        
+        # Final update to indicate completion
+        try:
+            # Save DataFrame to CSV one final time
+            save_to_csv(df, csv_path)
+            
+            # Set final session state
+            final_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(final_loop)
+            final_loop.run_until_complete(update_session_state(
+                success_count + error_count,
+                100.0 if total_queue_size > 0 and success_count + error_count >= total_queue_size else progress_percentage,
+                file_data_list,
+                is_done=True
+            ))
+            final_loop.close()
+            
+            print(f"Batch processing complete. Processed {success_count + error_count} files ({success_count} success, {error_count} errors)")
+        except Exception as e:
+            print(f"Error in final update: {str(e)}")
     
-    # Set to 100% when completely done
-    progress_percentage = 1.0
-    processed_count = initial_queue_size
-    
-    # Ensure final state is saved
-    # Force one last reload of the CSV at the end of batch processing
-    try:
-        df_final = read_csv(CSV_PATH)
-        if df_final is not None:
-            # Can't directly update session state from thread
-            df = df_final
     except Exception as e:
-        print(f"Error loading final CSV: {e}")
+        print(f"Critical error in batch processor: {str(e)}")
+        traceback.print_exc()
+
+async def update_session_state(processed_count, progress_percentage, file_data_list, is_done=False):
+    """Update session state from the background thread using asyncio"""
+    try:
+        # Use a lock or queue to update the session state
+        # This is a simple implementation using set_page_config which allows background threads to communicate with the main app
+        # Create a dummy query parameter to force a rerun
+        rerun_id = int(time.time() * 1000)
+        query_params = {"_update": str(rerun_id)}
+        
+        # Serialize the data we want to update
+        state_updates = {
+            "processed_count": processed_count,
+            "progress_percentage": progress_percentage,
+            "file_data_list": file_data_list
+        }
+        
+        if is_done:
+            state_updates["is_processing"] = False
+        
+        # Store in a temporary file for the main thread to pick up
+        with open('temp_state.json', 'w') as f:
+            json.dump({
+                "timestamp": rerun_id,
+                "updates": state_updates
+            }, f, default=lambda o: str(o))
+        
+        print(f"Updated session state: {processed_count} files processed, {progress_percentage:.1f}% complete")
+    except Exception as e:
+        print(f"Error updating session state: {str(e)}")
+
+def process_phase1(file_data, api_key):
+    """Process a file for phase 1 - extract basic metadata"""
+    try:
+        # Implement your Phase 1 processing logic here
+        # For example, extract metadata from the file using OpenAI
+        
+        # Set OpenAI API key for this request
+        openai.api_key = api_key
+        
+        # Get contents for processing
+        text_content = file_data.get('text_content', '')
+        if not text_content:
+            print(f"No text content found for {file_data.get('filename', file_data.get('title', 'Unknown'))}")
+            return False
+        
+        # Example: Extract metadata using OpenAI
+        # This is a placeholder - implement your actual extraction logic
+        response = openai.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are an assistant that extracts document metadata."},
+                {"role": "user", "content": f"Extract the following from this document: abstract, theme, format, geographic area, and keywords. Format as JSON.\n\n{text_content[:4000]}"}
+            ],
+            temperature=0.3,
+            max_tokens=500
+        )
+        
+        # Process the response
+        result = response.choices[0].message.content
+        
+        # Try to parse as JSON
+        try:
+            metadata = json.loads(result)
+            
+            # Update the file_data with extracted information
+            if isinstance(metadata, dict):
+                for key in ['abstract', 'theme', 'format', 'geographic_area', 'keywords']:
+                    if key in metadata:
+                        file_data[key] = metadata[key]
+            
+            return True
+        except json.JSONDecodeError:
+            print(f"Could not parse JSON from response for {file_data.get('filename', file_data.get('title', 'Unknown'))}")
+            return False
     
-    # Provide a summary of processing
-    if success_count > 0 or error_count > 0:
-        print(f"Batch processing complete: {success_count} files processed successfully, {error_count} errors")
-        if error_count > 0:
-            print("Check the console logs above for details about errors")
-    else:
-        print("Batch processing completed with no files processed")
+    except Exception as e:
+        print(f"Error in process_phase1: {str(e)}")
+        return False
+
+def process_phase2(file_data, api_key):
+    """Process a file for phase 2 - deeper content analysis"""
+    try:
+        # Implement your Phase 2 processing logic here
+        # For example, classify or categorize the file
+        
+        # Set OpenAI API key for this request
+        openai.api_key = api_key
+        
+        # Get contents for processing
+        text_content = file_data.get('text_content', '')
+        if not text_content:
+            print(f"No text content found for {file_data.get('filename', file_data.get('title', 'Unknown'))}")
+            return False
+        
+        # Example: Perform deeper analysis using OpenAI
+        # This is a placeholder - implement your actual analysis logic
+        response = openai.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are an assistant that performs deep document analysis."},
+                {"role": "user", "content": f"Analyze this document and provide: main entities, key topics, sentiment, and importance rating (1-10). Format as JSON.\n\n{text_content[:4000]}"}
+            ],
+            temperature=0.3,
+            max_tokens=500
+        )
+        
+        # Process the response
+        result = response.choices[0].message.content
+        
+        # Try to parse as JSON
+        try:
+            analysis = json.loads(result)
+            
+            # Update the file_data with analysis information
+            if isinstance(analysis, dict):
+                for key in ['entities', 'topics', 'sentiment', 'importance']:
+                    if key in analysis:
+                        file_data[key] = analysis[key]
+            
+            return True
+        except json.JSONDecodeError:
+            print(f"Could not parse JSON from response for {file_data.get('filename', file_data.get('title', 'Unknown'))}")
+            return False
     
-    # Signal that processing is complete
-    # We can't update session state directly, but we keep
-    # thread-safe variables updated for the main thread to read
-    print("Batch processing finished")
-    stop_processing.set()  # Signal that we're done
+    except Exception as e:
+        print(f"Error in process_phase2: {str(e)}")
+        return False
 
 # Function to update UI from thread-safe variables
 def update_ui_from_processing_thread():
@@ -489,15 +657,37 @@ def update_ui_from_processing_thread():
                         row = matching_rows.iloc[0]
                         # Update the file data with the values from the CSV
                         for col in df.columns:
-                            if col in ['abstract', 'theme', 'format', 'geographic_area', 'keywords',
-                                      'original_magazine', 'original_magazine_no', 'original_author', 
-                                      'original_title', 'magazine', 'magazine_no', 'author', 'title',
-                                      'preview_image_path', 'folder_images']:
+                            if col in ['abstract', 'abstract_ita', 'abstract_eng', 'language', 'theme', 'format', 
+                                     'geographic_area', 'keywords', 'original_magazine', 'original_magazine_no', 
+                                     'original_author', 'original_title', 'magazine', 'magazine_no', 'author', 
+                                     'title', 'preview_image_path', 'folder_images']:
                                 file_data[col] = row[col]
                         st.session_state.file_data_list[i] = file_data
                         
                 # Set dataframe in session state        
                 st.session_state.dataframe = df
+    else:
+        # If we're loading the CSV for data analysis but processing is still ongoing,
+        # preserve the processing state variables to prevent counter reset
+        if processing_thread and processing_thread.is_alive():
+            # Make sure to preserve these when reloading or showing CSV data
+            preserved_states = {
+                'processed_count': st.session_state.processed_count,
+                'progress_percentage': st.session_state.progress_percentage,
+                'last_batch_success_count': st.session_state.last_batch_success_count,
+                'last_batch_error_count': st.session_state.last_batch_error_count,
+                'is_processing': True
+            }
+            
+            # Update the dataframe without resetting the processing state
+            if os.path.exists(CSV_PATH):
+                df = read_csv(CSV_PATH)
+                if df is not None:
+                    st.session_state.dataframe = df
+                    
+            # Restore the preserved state variables
+            for key, value in preserved_states.items():
+                st.session_state[key] = value
 
 def validate_openai_api_key(api_key: str) -> bool:
     """
@@ -720,6 +910,97 @@ with tab_extraction:
             }
             st.session_state.processing_phase = phase_mapping[st.session_state.processing_phase_selection]
             
+            # Define the batch processing function here before it's called
+            def start_batch_processing():
+                """Function to handle starting batch processing"""
+                global processing_thread, stop_processing
+                
+                # Reset the stop flag
+                stop_processing.clear()
+                
+                # Clear any existing queue
+                while not processing_queue.empty():
+                    try:
+                        processing_queue.get_nowait()
+                        processing_queue.task_done()
+                    except:
+                        pass
+                
+                # Ensure the OpenAI API key is set in the environment
+                # This ensures the background thread will have access to it
+                if 'api_key' in st.session_state and st.session_state.api_key:
+                    os.environ['OPENAI_API_KEY'] = st.session_state.api_key
+                    print(f"API key set in environment before starting batch processor")
+                
+                # Start batch processing
+                st.session_state.is_processing = True
+                st.session_state.processed_count = 0
+                st.session_state.progress_percentage = 0.0
+                
+                selected_phase = st.session_state.processing_phase
+                
+                # Create deep copies of the file data list to prevent session state threading issues
+                file_data_list = []
+                if hasattr(st.session_state, 'file_data_list') and st.session_state.file_data_list:
+                    # This creates a deep copy of each file data dictionary
+                    file_data_list = [dict(item) for item in st.session_state.file_data_list]
+                
+                # Ensure the file_data_list is populated
+                if not file_data_list:
+                    st.error("No files found for processing. Please upload some files first.")
+                    st.session_state.is_processing = False
+                    return
+                
+                # Count files that need processing
+                phase1_count = 0
+                phase2_count = 0
+                
+                # Put all unprocessed files in the queue based on selected phase
+                for file_data in file_data_list:
+                    if selected_phase == 0 or selected_phase == 1:  # Phase 1 or Both
+                        if not all(k in file_data for k in ['abstract', 'theme', 'format', 'geographic_area', 'keywords']):
+                            # Create a deep copy to avoid thread issues
+                            processing_queue.put((dict(file_data), 1))  # Phase 1
+                            phase1_count += 1
+                    
+                    if selected_phase == 0 or selected_phase == 2:  # Phase 2 or Both
+                        # For Phase 2, we need files that have completed Phase 1
+                        if all(k in file_data for k in ['abstract', 'theme', 'format', 'geographic_area', 'keywords']):
+                            # Create a deep copy to avoid thread issues
+                            processing_queue.put((dict(file_data), 2))  # Phase 2
+                            phase2_count += 1
+                
+                total_queue_size = phase1_count + phase2_count
+                st.session_state.total_queue_size = total_queue_size
+                
+                if total_queue_size == 0:
+                    st.warning("No files need processing for the selected phase. Try selecting a different phase.")
+                    st.session_state.is_processing = False
+                    return
+                
+                # Show what's being processed
+                if selected_phase == 0:
+                    st.info(f"Processing {phase1_count} files in Phase 1 and {phase2_count} files in Phase 2.")
+                elif selected_phase == 1:
+                    st.info(f"Processing {phase1_count} files in Phase 1.")
+                elif selected_phase == 2:
+                    st.info(f"Processing {phase2_count} files in Phase 2.")
+                
+                # Define batch processing parameters for thread
+                batch_params = {
+                    'api_key': os.environ.get('OPENAI_API_KEY', ''),
+                    'total_queue_size': total_queue_size,
+                    'file_data_list': file_data_list
+                }
+                
+                # Start the background thread with the parameters
+                processing_thread = threading.Thread(
+                    target=batch_processor,
+                    args=(batch_params,)
+                )
+                processing_thread.daemon = True
+                processing_thread.start()
+            
             if not api_key_valid:
                 st.error("Please enter a valid OpenAI API key before processing files")
             elif st.session_state.is_processing:
@@ -728,60 +1009,7 @@ with tab_extraction:
                     st.warning("Stopping after current file completes...")
             else:
                 if st.button("Start Batch Processing"):
-                    # Reset the stop flag
-                    stop_processing.clear()
-                    
-                    # Clear any existing queue
-                    while not processing_queue.empty():
-                        try:
-                            processing_queue.get_nowait()
-                            processing_queue.task_done()
-                        except:
-                            pass
-                    
-                    # Start batch processing
-                    st.session_state.is_processing = True
-                    st.session_state.processed_count = 0
-                    st.session_state.progress_percentage = 0.0
-                    
-                    selected_phase = st.session_state.processing_phase
-                    
-                    # Count files that need processing
-                    phase1_count = 0
-                    phase2_count = 0
-                    
-                    # Put all unprocessed files in the queue based on selected phase
-                    for file_data in st.session_state.file_data_list:
-                        if selected_phase == 0 or selected_phase == 1:  # Phase 1 or Both
-                            if not all(k in file_data for k in ['abstract', 'theme', 'format', 'geographic_area', 'keywords']):
-                                processing_queue.put((file_data, 1))  # Phase 1
-                                phase1_count += 1
-                        
-                        if selected_phase == 0 or selected_phase == 2:  # Phase 2 or Both
-                            # For Phase 2, we need files that have completed Phase 1
-                            if all(k in file_data for k in ['abstract', 'theme', 'format', 'geographic_area', 'keywords']):
-                                processing_queue.put((file_data, 2))  # Phase 2
-                                phase2_count += 1
-                    
-                    total_queue_size = phase1_count + phase2_count
-                    st.session_state.total_queue_size = total_queue_size
-                    
-                    if total_queue_size == 0:
-                        st.warning("No files need processing for the selected phase. Try selecting a different phase.")
-                        st.session_state.is_processing = False
-                    else:
-                        # Show what's being processed
-                        if selected_phase == 0:
-                            st.info(f"Processing {phase1_count} files in Phase 1 and {phase2_count} files in Phase 2.")
-                        elif selected_phase == 1:
-                            st.info(f"Processing {phase1_count} files in Phase 1.")
-                        elif selected_phase == 2:
-                            st.info(f"Processing {phase2_count} files in Phase 2.")
-                        
-                        # Start the background thread
-                        processing_thread = threading.Thread(target=batch_processor)
-                        processing_thread.daemon = True
-                        processing_thread.start()
+                    start_batch_processing()
             
             # Display progress information
             total_files = len(st.session_state.file_data_list)
@@ -904,9 +1132,10 @@ if st.session_state.file_data_list:
                                 row = matching_rows.iloc[0]
                                 # Update the file data with the values from the CSV
                                 for col in df.columns:
-                                    if col in ['abstract', 'theme', 'format', 'geographic_area', 'keywords',
-                                              'original_magazine', 'original_magazine_no', 'original_author', 
-                                              'original_title', 'magazine', 'magazine_no', 'author', 'title']:
+                                    if col in ['abstract', 'abstract_ita', 'abstract_eng', 'language', 'theme', 'format', 
+                                             'geographic_area', 'keywords', 'original_magazine', 'original_magazine_no', 
+                                             'original_author', 'original_title', 'magazine', 'magazine_no', 'author', 
+                                             'title', 'preview_image_path', 'folder_images']:
                                         file_data[col] = row[col]
                                 st.session_state.file_data_list[i] = file_data
                         
@@ -1065,8 +1294,25 @@ if st.session_state.file_data_list:
                     else:
                         st.text(f"Title: {file_data['title']}")
                     
-                    # Display extracted fields if available
-                    if 'abstract' in file_data:
+                    # Display language field
+                    if 'language' in file_data:
+                        st.text(f"Language: {file_data['language']}")
+                    
+                    # Display abstracts based on language if available
+                    if 'language' in file_data and file_data['language'] == 'ITA' and 'abstract_ita' in file_data and file_data['abstract_ita']:
+                        st.text("Abstract (ITA):")
+                        st.write(file_data['abstract_ita'])
+                        if 'abstract_eng' in file_data and file_data['abstract_eng']:
+                            st.text("Abstract (ENG):")
+                            st.write(file_data['abstract_eng'])
+                    elif 'language' in file_data and file_data['language'] == 'ENG' and 'abstract_eng' in file_data and file_data['abstract_eng']:
+                        st.text("Abstract (ENG):")
+                        st.write(file_data['abstract_eng'])
+                        if 'abstract_ita' in file_data and file_data['abstract_ita']:
+                            st.text("Abstract (ITA):")
+                            st.write(file_data['abstract_ita'])
+                    elif 'abstract' in file_data:
+                        # Fallback to original abstract
                         st.text("Abstract:")
                         st.write(file_data['abstract'])
                     
@@ -1359,17 +1605,17 @@ with tab_analysis:
             st.info("Process files with extraction to create properly formatted data.")
             st.stop()
         
-        # Create tabs for different analysis views
-        overview_tab, explorer_tab, browser_tab, validation_tab, theme_tab = st.tabs([
-            "Overview", 
-            "Magazine Explorer",
-            "Article Browser",
-            "Data Validation",
-            "Theme Analysis"
+        # Initialize tabs for the Analysis section
+        overview_tab, data_validation_tab, theme_tab, keyword_tab = st.tabs([
+            "📈 Overview", 
+            "🔍 Data Validation",
+            "📊 Theme Analysis",
+            "🔗 Keywords"
         ])
         
+        # Display Overview tab
         with overview_tab:
-            st.subheader("📊 Data Overview")
+            st.subheader("📈 Overview")
             
             st.markdown("""
             This tab provides a high-level summary of all the extracted magazine data, including 
@@ -1378,282 +1624,52 @@ with tab_analysis:
             
             st.markdown("---")
             
-            # Display basic stats
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Articles", len(df))
-            with col2:
-                st.metric("Magazines", df['magazine'].nunique())
-            with col3:
-                st.metric("Issues", df.groupby(['magazine', 'magazine_no']).ngroups)
-                
-            # Second row
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Unique Authors", df['author'].nunique())
-            with col2:
-                # Check if theme column exists before accessing it
-                if 'theme' in df.columns:
-                    st.metric("Themes", df['theme'].nunique())
-                else:
-                    st.metric("Themes", "N/A")
-            with col3:
-                # Check if format column exists before accessing it 
-                if 'format' in df.columns:
-                    st.metric("Formats", df['format'].nunique())
-                else:
-                    st.metric("Formats", "N/A")
-            
             # Articles per magazine
             st.subheader("Articles per Magazine")
-            magazine_counts = df['magazine'].value_counts().reset_index()
-            magazine_counts.columns = ['Magazine', 'Count']
+            fig = plot_magazine_distribution(df)
+            st.plotly_chart(fig, use_container_width=True)
             
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.bar(magazine_counts['Magazine'], magazine_counts['Count'], color=['#1f77b4', '#ff7f0e'])
-            ax.set_ylabel('Number of Articles')
-            ax.set_title('Articles per Magazine')
-            
-            # Add labels
-            for i, count in enumerate(magazine_counts['Count']):
-                ax.text(i, count + 5, str(count), ha='center')
-            
-            st.pyplot(fig)
-            
-            # Articles per issue
+            # Articles per issue - using the new faceted chart
             st.subheader("Articles per Issue")
-            issue_counts = df.groupby(['magazine', 'magazine_no']).size().reset_index()
-            issue_counts.columns = ['Magazine', 'Issue', 'Count']
-            
-            # Sort by magazine and issue
-            issue_counts['Issue_Numeric'] = pd.to_numeric(issue_counts['Issue'], errors='coerce')
-            issue_counts = issue_counts.sort_values(['Magazine', 'Issue_Numeric'])
-            
-            # Group by magazine
-            magazines = issue_counts['Magazine'].unique()
-            
-            for magazine in magazines:
-                st.write(f"### {magazine}")
-                magazine_data = issue_counts[issue_counts['Magazine'] == magazine]
-                
-                # Create bar chart
-                fig, ax = plt.subplots(figsize=(12, 5))
-                bars = ax.bar(magazine_data['Issue'], magazine_data['Count'], color='#1f77b4')
-                
-                # Add count labels
-                for bar in bars:
-                    height = bar.get_height()
-                    ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                            str(int(height)), ha='center', va='bottom')
-                
-                ax.set_xlabel('Issue Number')
-                ax.set_ylabel('Number of Articles')
-                ax.set_title(f'Articles per Issue in {magazine}')
-                
-                # Use thinner bars with some spacing
-                plt.xticks(rotation=45)
-                
-                st.pyplot(fig)
+            fig = plot_issue_distribution(df)
+            st.plotly_chart(fig, use_container_width=True)
             
             # Top authors
             st.subheader("Top 10 Authors")
-            top_authors = df['author'].value_counts().head(10)
+            fig = plot_top_authors(df)
+            st.plotly_chart(fig, use_container_width=True)
             
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.barh(top_authors.index[::-1], top_authors.values[::-1], color='#1f77b4')
-            ax.set_xlabel('Number of Articles')
-            ax.set_title('Top 10 Authors by Article Count')
-            
-            # Add count labels
-            for i, count in enumerate(top_authors.values[::-1]):
-                ax.text(count + 0.2, i, str(count), va='center')
-            
-            st.pyplot(fig)
-            
-            # Theme distribution
-            st.subheader("Theme Distribution")
-            
-            if 'theme' in df.columns:
-                theme_counts = df['theme'].value_counts()
-                
-                fig, ax = plt.subplots(figsize=(8, 8))
-                wedges, texts, autotexts = ax.pie(
-                    theme_counts, 
-                    labels=theme_counts.index, 
-                    autopct='%1.1f%%',
-                    textprops={'fontsize': 9}
-                )
-                ax.axis('equal')
-                plt.tight_layout()
-                
-                st.pyplot(fig)
-            else:
-                st.info("Theme information not available. Process some files with Phase 1 extraction first.")
-            
-        with explorer_tab:
-            st.subheader("🔍 Magazine Explorer")
-            
-            st.markdown("""
-            Explore articles by magazine and issue number. Select a magazine and issue to view all 
-            articles within that issue, including their metadata and content details.
-            """)
-            
-            st.markdown("---")
-            
-            # Magazine and issue selection
+            # Format distribution chart - now with by-magazine breakdown
+            st.subheader("Format Distribution")
             col1, col2 = st.columns(2)
             
             with col1:
-                magazines = sorted(df['magazine'].unique())
-                selected_magazine = st.selectbox("Select Magazine", magazines)
-                
-            # Filter by magazine
-            magazine_df = df[df['magazine'] == selected_magazine]
-            
-            with col2:
-                issues = sorted(magazine_df['magazine_no'].unique(), 
-                               key=lambda x: float(x) if str(x).replace('.', '', 1).isdigit() else 0)
-                selected_issue = st.selectbox("Select Issue", issues)
-            
-            # Filter by issue
-            issue_df = magazine_df[magazine_df['magazine_no'] == selected_issue]
-            
-            # Display issue info
-            st.subheader(f"{selected_magazine} - Issue {selected_issue}")
-            st.write(f"Found {len(issue_df)} articles in this issue")
-            
-            # Display metrics
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Number of Articles", len(issue_df))
-            with col2:
-                st.metric("Unique Authors", issue_df['author'].nunique())
-            with col3:
-                if 'theme' in issue_df.columns:
-                    st.metric("Themes Covered", issue_df['theme'].nunique())
+                fig = plot_format_distribution(df)
+                if fig is not None:
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
-                    st.metric("Themes Covered", "N/A")
-            
-            # Display articles
-            st.subheader("Articles in this issue")
-            
-            for i, (_, article) in enumerate(issue_df.iterrows(), 1):
-                with st.expander(f"{i}. {article['title']} (by {article['author']})"):
-                    # Display article details with careful column checking 
-                    try:
-                        if 'abstract' in article.index and not pd.isna(article['abstract']):
-                            st.write(f"**Abstract:** {article['abstract']}")
-                        
-                        if 'theme' in article.index and not pd.isna(article['theme']):
-                            st.write(f"**Theme:** {article['theme']}")
-                        
-                        if 'format' in article.index and not pd.isna(article['format']):
-                            st.write(f"**Format:** {article['format']}")
-                        
-                        if 'geographic_area' in article.index and not pd.isna(article['geographic_area']):
-                            st.write(f"**Geographic Area:** {article['geographic_area']}")
-                        
-                        if 'keywords' in article.index and not pd.isna(article['keywords']):
-                            st.write(f"**Keywords:** {article['keywords']}")
-                    except Exception as e:
-                        st.error(f"Error displaying article details: {e}")
-                        st.write("Some metadata may be missing for this article.")
-            
-        with browser_tab:
-            st.subheader("🔎 Article Browser")
-            
-            st.markdown("""
-            Search and filter articles across all magazines. Use the search box to find specific content
-            in titles, abstracts, or keywords, and filter by theme to narrow down results.
-            """)
-            
-            st.markdown("---")
-            
-            # Search and filter options
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                search_term = st.text_input("Search in Title, Abstract or Keywords")
+                    st.info("Format information not available.")
             
             with col2:
-                # Theme filter
-                if 'theme' in df.columns:
-                    # Convert themes to strings before sorting to avoid type comparison issues
-                    themes = ["All Themes"] + sorted(df['theme'].astype(str).unique().tolist())
-                    selected_theme = st.selectbox("Filter by Theme", themes)
+                fig = plot_format_by_magazine(df)
+                if fig is not None:
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
-                    st.warning("Theme information not available")
-                    selected_theme = "All Themes"
+                    st.info("Format information not available.")
             
-            # Apply filters
-            filtered_df = df.copy()
+            # Language distribution if available
+            if 'language' in df.columns:
+                st.subheader("Language Distribution")
+                language_pie, language_stacked = plot_language_distribution(df)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.plotly_chart(language_pie, use_container_width=True)
+                with col2:
+                    st.plotly_chart(language_stacked, use_container_width=True)
             
-            # Apply theme filter
-            if selected_theme != "All Themes" and 'theme' in filtered_df.columns:
-                # Convert to string for safe comparison
-                filtered_df['theme_str'] = filtered_df['theme'].astype(str)
-                filtered_df = filtered_df[filtered_df['theme_str'] == selected_theme]
-            
-            # Apply search filter
-            if search_term:
-                # Make sure all required columns exist
-                for col in ['title', 'abstract', 'keywords']:
-                    if col not in filtered_df.columns:
-                        filtered_df[col] = ''  # Add empty column if missing
-                
-                # Apply the search filter
-                title_match = filtered_df['title'].str.contains(search_term, case=False, na=False)
-                abstract_match = filtered_df['abstract'].str.contains(search_term, case=False, na=False)
-                keywords_match = filtered_df['keywords'].str.contains(search_term, case=False, na=False)
-                
-                filtered_df = filtered_df[title_match | abstract_match | keywords_match]
-            
-            # Display filtered results
-            st.write(f"Found {len(filtered_df)} articles matching your criteria")
-            
-            # Display results in pages
-            articles_per_page = 10
-            num_pages = max(1, (len(filtered_df) + articles_per_page - 1) // articles_per_page)
-            
-            if len(filtered_df) > 0:
-                page_num = st.number_input("Page", min_value=1, max_value=num_pages, value=1, key="browser_page")
-                
-                # Calculate start and end indices
-                start_idx = (page_num - 1) * articles_per_page
-                end_idx = min(start_idx + articles_per_page, len(filtered_df))
-                
-                # Get articles for current page
-                page_df = filtered_df.iloc[start_idx:end_idx]
-                
-                # Display articles
-                for i, (_, article) in enumerate(page_df.iterrows(), start_idx + 1):
-                    with st.expander(f"{i}. {article['title']} ({article['magazine']} {article['magazine_no']})"):
-                        # Display article details with careful column checking
-                        try:
-                            st.write(f"**Author:** {article['author']}")
-                            
-                            if 'abstract' in article.index and not pd.isna(article['abstract']):
-                                st.write(f"**Abstract:** {article['abstract']}")
-                            
-                            if 'theme' in article.index and not pd.isna(article['theme']):
-                                st.write(f"**Theme:** {article['theme']}")
-                                
-                            if 'format' in article.index and not pd.isna(article['format']):
-                                st.write(f"**Format:** {article['format']}")
-                                
-                            if 'geographic_area' in article.index and not pd.isna(article['geographic_area']):
-                                st.write(f"**Geographic Area:** {article['geographic_area']}")
-                                
-                            if 'keywords' in article.index and not pd.isna(article['keywords']):
-                                st.write(f"**Keywords:** {article['keywords']}")
-                        except Exception as e:
-                            st.error(f"Error displaying article details: {e}")
-                            st.write("Some metadata may be missing for this article.")
-            else:
-                st.info("No articles found matching your criteria.")
-                
-        with validation_tab:
-            st.subheader("✓ Data Validation")
+        with data_validation_tab:
+            st.subheader("🔍 Data Validation")
             
             st.markdown("""
             Check data quality and validate metadata against expected values and ranges. This tab highlights 
@@ -1802,7 +1818,7 @@ with tab_analysis:
                     st.success("✅ No null values found in required fields")
                     
         with theme_tab:
-            st.subheader("📈 Theme Analysis")
+            st.subheader("📊 Theme Analysis")
             
             st.markdown("""
             Analyze themes and their distribution across magazines and issues. View overall theme distribution,
@@ -1815,26 +1831,13 @@ with tab_analysis:
                 st.info("Theme information is not available. Process files with Phase 1 extraction first.")
                 st.stop()
             
-            # Overall theme distribution
+            # Overall Theme Distribution
             st.subheader("Overall Theme Distribution")
+            fig = plot_theme_distribution(df, top_n=15, orientation='h')  
+            st.plotly_chart(fig, use_container_width=True)
             
-            theme_counts = df['theme'].value_counts()
-            
-            # Create a bar chart for themes
-            fig, ax = plt.subplots(figsize=(12, 6))
-            theme_counts.plot(kind='barh', ax=ax)
-            ax.set_xlabel('Number of Articles')
-            ax.set_title('Distribution of Themes')
-            ax.invert_yaxis()  # Show highest count at the top
-            
-            # Add count labels
-            for i, count in enumerate(theme_counts):
-                ax.text(count + 1, i, str(count), va='center')
-            
-            st.pyplot(fig)
-            
-            # Themes by magazine
-            st.subheader("Themes by Magazine")
+            # Themes by Magazine
+            st.subheader("Theme Distribution by Magazine")
             
             # Create a radio button to select magazine
             magazine = st.radio("Select Magazine", sorted(df['magazine'].unique()))
@@ -1845,33 +1848,17 @@ with tab_analysis:
             if len(magazine_df) == 0:
                 st.warning(f"No articles found for magazine: {magazine}")
                 st.stop()
-            
-            # Calculate theme counts for this magazine
-            magazine_theme_counts = magazine_df['theme'].value_counts()
-            
-            if len(magazine_theme_counts) == 0:
-                st.warning(f"No theme data available for {magazine}")
-                st.stop()
                 
-            # Create a pie chart
-            fig, ax = plt.subplots(figsize=(8, 8))
-            wedges, texts, autotexts = ax.pie(
-                magazine_theme_counts, 
-                labels=magazine_theme_counts.index, 
-                autopct='%1.1f%%',
-                textprops={'fontsize': 9}
-            )
-            ax.axis('equal')
-            ax.set_title(f'Theme Distribution in {magazine}')
+            # Use the pie chart from our visualization module
+            fig = plot_theme_pie(magazine_df, title=f"Theme Distribution in {magazine}")
+            st.plotly_chart(fig, use_container_width=True)
             
-            st.pyplot(fig)
-            
-            # Theme trends across issues
+            # Theme trends across issues - now using Plotly
             st.subheader("Theme Trends Across Issues")
             
             # Get top 5 themes for this magazine
-            # Convert to strings to ensure type consistency
-            magazine_df['theme_str'] = magazine_df['theme'].astype(str)
+            magazine_df = magazine_df.copy()  # Create a true copy to avoid the warning
+            magazine_df.loc[:, 'theme_str'] = magazine_df['theme'].astype(str)
             top_themes = magazine_df['theme_str'].value_counts().head(5).index.tolist()
             
             # Let user select themes to display
@@ -1882,39 +1869,271 @@ with tab_analysis:
             )
             
             if selected_themes:
-                # Filter to selected themes using string comparison for consistency
-                theme_df = magazine_df[magazine_df['theme_str'].isin(selected_themes)]
-                
-                if len(theme_df) == 0:
-                    st.warning("No data available for the selected themes")
-                    st.stop()
-                
-                # Group by issue and theme
-                try:
-                    theme_issue_counts = theme_df.groupby(['magazine_no', 'theme']).size().unstack().fillna(0)
-                    
-                    if len(theme_issue_counts) == 0:
-                        raise ValueError("Not enough data")
-                    
-                    # Sort by issue number
-                    theme_issue_counts['issue_numeric'] = pd.to_numeric(theme_issue_counts.index, errors='coerce')
-                    theme_issue_counts = theme_issue_counts.sort_values('issue_numeric')
-                    theme_issue_counts = theme_issue_counts.drop(columns=['issue_numeric'])
-                    
-                    # Create a line chart
-                    fig, ax = plt.subplots(figsize=(12, 6))
-                    
-                    for theme in theme_issue_counts.columns:
-                        ax.plot(theme_issue_counts.index, theme_issue_counts[theme], marker='o', label=theme)
-                    
-                    ax.set_xlabel('Issue Number')
-                    ax.set_ylabel('Number of Articles')
-                    ax.set_title(f'Theme Trends Across {magazine} Issues')
-                    ax.legend()
-                    ax.grid(True, linestyle='--', alpha=0.7)
-                    
-                    st.pyplot(fig)
-                except Exception as e:
-                    st.warning(f"Not enough data to create theme trends chart for the selected themes. Error: {str(e)}")
+                # Use our new Plotly-based theme trends function
+                fig = plot_theme_trends_plotly(df, magazine, selected_themes)
+                if fig is not None:
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning("Not enough data to create theme trends chart for the selected themes.")
             else:
                 st.info("Please select at least one theme to display.")
+
+        with keyword_tab:
+            st.subheader("🔗 Keyword Network Analysis")
+            
+            st.markdown("""
+            This visualization shows connections between keywords that appear together in articles.
+            Each node represents a keyword, and links indicate keywords that appear in the same article.
+            Larger nodes have more connections, and keywords that are also themes are highlighted in orange.
+            
+            Use the controls below to filter and customize the visualization.
+            """)
+            
+            # Add filters and controls in a sidebar-like container
+            with st.container():
+                col1, col2, col3 = st.columns([1, 1, 1])
+                
+                with col1:
+                    # Corpus selection
+                    st.markdown("#### 📄 Content Filtering")
+                    
+                    # Add a filter by magazine
+                    magazine_filter = st.multiselect(
+                        "Filter by Magazine", 
+                        options=df['magazine'].unique(),
+                        default=list(df['magazine'].unique()),
+                        help="Select which magazines to include in the analysis"
+                    )
+                    
+                    # Add a filter by theme
+                    theme_options = df['theme'].dropna().unique() if 'theme' in df.columns else []
+                    theme_filter = st.multiselect(
+                        "Filter by Theme",
+                        options=theme_options,
+                        default=[],
+                        help="Select themes to filter the data (leave empty to include all)"
+                    )
+                
+                with col2:
+                    # Controls for visualization
+                    st.markdown("#### 🎮 Visualization Controls")
+                    
+                    # Add a minimum link weight filter
+                    min_weight = st.slider(
+                        "Minimum co-occurrence", 
+                        min_value=1, 
+                        max_value=5, 
+                        value=1,
+                        help="Filter links by minimum number of times keywords appear together"
+                    )
+                    
+                    # Add a maximum nodes filter to improve performance
+                    max_nodes = st.slider(
+                        "Maximum nodes", 
+                        min_value=20, 
+                        max_value=200, 
+                        value=100,
+                        help="Limit the number of nodes to improve performance"
+                    )
+                    
+                    # Add a filter for minimum keyword frequency
+                    min_freq = st.slider(
+                        "Minimum keyword frequency", 
+                        min_value=1, 
+                        max_value=10, 
+                        value=1,
+                        help="Only include keywords that appear in at least this many articles"
+                    )
+                
+                with col3:
+                    # Analysis settings
+                    st.markdown("#### 📊 Analysis Settings")
+                    
+                    # Split keywords option
+                    split_keywords = st.checkbox(
+                        "Split compound keywords", 
+                        value=False,
+                        help="Split keywords like 'renewable energy' into 'renewable' and 'energy'"
+                    )
+                    
+                    # Stopwords option
+                    use_stopwords = st.checkbox(
+                        "Filter common stopwords", 
+                        value=True,
+                        help="Remove common words like 'and', 'the', etc."
+                    )
+                    
+                    # Language selector for stopwords
+                    stopword_language = st.selectbox(
+                        "Stopword language",
+                        options=["italian", "english", "both"],
+                        index=2,
+                        help="Language for stopwords filtering",
+                        disabled=not use_stopwords
+                    )
+            
+            # Apply the filters to the data
+            filtered_df = df.copy()
+            
+            # Apply magazine filter
+            if magazine_filter and len(magazine_filter) < len(df['magazine'].unique()):
+                filtered_df = filtered_df[filtered_df['magazine'].isin(magazine_filter)]
+            
+            # Apply theme filter
+            if theme_filter and 'theme' in filtered_df.columns:
+                filtered_df = filtered_df[filtered_df['theme'].isin(theme_filter)]
+            
+            # Show info about filtered dataset
+            st.caption(f"Analyzing {len(filtered_df)} articles from {len(filtered_df['magazine'].unique())} magazines")
+            
+            # Get the keywords data
+            if 'keywords' not in filtered_df.columns:
+                st.warning("No keywords data available. Please run Phase 1 extraction on your files.")
+            else:
+                # Process keywords based on options
+                if split_keywords:
+                    # Split compound keywords
+                    processed_keywords = []
+                    for idx, row in filtered_df.iterrows():
+                        if pd.isna(row.get('keywords')):
+                            continue
+                            
+                        keywords = row['keywords'].split(',')
+                        expanded_keywords = []
+                        
+                        for kw in keywords:
+                            kw = kw.strip()
+                            if ' ' in kw:
+                                # Split multi-word keywords
+                                parts = [p.strip() for p in kw.split(' ') if p.strip()]
+                                expanded_keywords.extend(parts)
+                            if kw:  # Also keep the original keyword
+                                expanded_keywords.append(kw)
+                        
+                        # Create a copy of the row
+                        row_copy = row.copy()
+                        row_copy['keywords'] = ','.join(expanded_keywords)
+                        processed_keywords.append(row_copy)
+                        
+                    if processed_keywords:
+                        # Create a new dataframe with the processed keywords
+                        temp_df = pd.DataFrame(processed_keywords)
+                        # Build network from the processed data
+                        network_data = build_keyword_network(temp_df)
+                    else:
+                        network_data = {"nodes": [], "links": []}
+                else:
+                    # Use original keywords
+                    network_data = build_keyword_network(filtered_df)
+                
+                # Apply stopwords filtering if enabled
+                if use_stopwords:
+                    try:
+                        # Try to import NLTK
+                        import nltk
+                        from nltk.corpus import stopwords
+                        
+                        # Download stopwords if not already downloaded
+                        nltk.download('stopwords', quiet=True)
+                        
+                        # Get stopwords based on selected language
+                        stopword_set = set()
+                        if stopword_language in ["italian", "both"]:
+                            stopword_set.update(stopwords.words('italian'))
+                        if stopword_language in ["english", "both"]:
+                            stopword_set.update(stopwords.words('english'))
+                        
+                        # Filter nodes to remove stopwords
+                        network_data["nodes"] = [
+                            node for node in network_data["nodes"] 
+                            if node["id"].lower() not in stopword_set
+                        ]
+                        
+                        # Filter links to remove stopwords
+                        network_data["links"] = [
+                            link for link in network_data["links"]
+                            if (link["source"] not in stopword_set and 
+                                link["target"] not in stopword_set)
+                        ]
+                    except (ImportError, ModuleNotFoundError):
+                        st.warning("NLTK is not installed. Stopwords filtering is disabled. To enable, install with: pip install nltk")
+                        use_stopwords = False
+                    except Exception as e:
+                        st.warning(f"Could not filter stopwords: {str(e)}")
+                        use_stopwords = False
+                
+                # Filter links by weight
+                if min_weight > 1:
+                    network_data["links"] = [link for link in network_data["links"] if link["weight"] >= min_weight]
+                
+                # Count node connections and frequencies after filtering links
+                node_connections = {}
+                node_weights = {}
+                
+                for link in network_data["links"]:
+                    # Count connections
+                    node_connections[link["source"]] = node_connections.get(link["source"], 0) + 1
+                    node_connections[link["target"]] = node_connections.get(link["target"], 0) + 1
+                    
+                    # Sum weights
+                    node_weights[link["source"]] = node_weights.get(link["source"], 0) + link["weight"]
+                    node_weights[link["target"]] = node_weights.get(link["target"], 0) + link["weight"]
+                
+                # Filter by minimum frequency
+                if min_freq > 1:
+                    # Keep only nodes that appear in at least min_freq articles
+                    freq_filtered_nodes = {node_id for node_id, weight in node_weights.items() if weight >= min_freq}
+                    network_data["nodes"] = [node for node in network_data["nodes"] if node["id"] in freq_filtered_nodes]
+                    network_data["links"] = [
+                        link for link in network_data["links"] 
+                        if link["source"] in freq_filtered_nodes and link["target"] in freq_filtered_nodes
+                    ]
+                
+                # Update the connections after filtering
+                node_connections = {}
+                for link in network_data["links"]:
+                    node_connections[link["source"]] = node_connections.get(link["source"], 0) + 1
+                    node_connections[link["target"]] = node_connections.get(link["target"], 0) + 1
+                
+                # Filter nodes by connection count and limit to max_nodes
+                connected_nodes = sorted(node_connections.items(), key=lambda x: x[1], reverse=True)
+                if len(connected_nodes) > max_nodes:
+                    connected_nodes = connected_nodes[:max_nodes]
+                    
+                # Keep only the top nodes
+                top_node_ids = {node[0] for node in connected_nodes}
+                network_data["nodes"] = [node for node in network_data["nodes"] if node["id"] in top_node_ids]
+                network_data["links"] = [
+                    link for link in network_data["links"] 
+                    if link["source"] in top_node_ids and link["target"] in top_node_ids
+                ]
+                
+                # Show network stats before rendering
+                st.markdown("---")
+                
+                # Add some interesting network metrics
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("Keywords", len(network_data['nodes']))
+                
+                with col2:
+                    st.metric("Connections", len(network_data['links']))
+                
+                with col3:
+                    if len(network_data['nodes']) > 0:
+                        density = len(network_data['links']) / (len(network_data['nodes']) * (len(network_data['nodes'])-1)/2) if len(network_data['nodes']) > 1 else 0
+                        st.metric("Network Density", f"{density:.2%}")
+                    else:
+                        st.metric("Network Density", "N/A")
+                
+                with col4:
+                    if len(connected_nodes) > 0:
+                        avg_connections = sum(count for _, count in connected_nodes) / len(connected_nodes)
+                        st.metric("Avg. Connections", f"{avg_connections:.1f}")
+                    else:
+                        st.metric("Avg. Connections", "N/A")
+                
+                # Render the network
+                with st.spinner("Generating network visualization..."):
+                    render_keyword_network(network_data)

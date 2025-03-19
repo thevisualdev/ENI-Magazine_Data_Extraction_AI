@@ -7,6 +7,8 @@ import os
 from collections import Counter, defaultdict
 import re
 from typing import Dict, List, Tuple, Any, Set
+import plotly.express as px
+import plotly.graph_objects as go
 
 """
 CSV Analyzer - Streamlit dashboard for analyzing and exploring the extracted CSV data
@@ -54,13 +56,11 @@ def main():
     # Load the data
     df = load_data(csv_path)
     
-    # Sidebar navigation
+    # Simplified sidebar navigation
     nav_options = [
         "📈 Overview",
         "🔍 Data Validation", 
-        "🔎 Magazine Explorer",
-        "📚 Article Browser",
-        "📊 Theme Analysis"
+        "🔎 Explorer"
     ]
     
     nav_selection = st.sidebar.radio("Navigation", nav_options)
@@ -70,12 +70,8 @@ def main():
         show_overview(df)
     elif nav_selection == "🔍 Data Validation":
         show_validation(df)
-    elif nav_selection == "🔎 Magazine Explorer":
-        show_magazine_explorer(df)
-    elif nav_selection == "📚 Article Browser":
-        show_article_browser(df)
-    elif nav_selection == "📊 Theme Analysis":
-        show_theme_analysis(df)
+    elif nav_selection == "🔎 Explorer":
+        show_explorer(df)
 
 def show_overview(df: pd.DataFrame):
     """Display overview statistics and charts"""
@@ -97,7 +93,13 @@ def show_overview(df: pd.DataFrame):
     with col2:
         st.metric("Themes", df['theme'].nunique())
     with col3:
-        st.metric("Formats", df['format'].nunique())
+        if 'language' in df.columns:
+            language_counts = df['language'].value_counts()
+            ita_count = language_counts.get('ITA', 0)
+            eng_count = language_counts.get('ENG', 0)
+            st.metric("Languages", f"ITA: {ita_count}, ENG: {eng_count}")
+        else:
+            st.metric("Formats", df['format'].nunique())
     
     # Articles per magazine chart
     st.subheader("Articles per Magazine")
@@ -106,99 +108,173 @@ def show_overview(df: pd.DataFrame):
     magazine_counts = df['magazine'].value_counts().reset_index()
     magazine_counts.columns = ['Magazine', 'Count']
     
-    # Create a bar chart
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.bar(magazine_counts['Magazine'], magazine_counts['Count'], color=['#1f77b4', '#ff7f0e'])
-    ax.set_ylabel('Number of Articles')
-    ax.set_title('Articles per Magazine')
-    
-    # Customize the chart
-    for i, count in enumerate(magazine_counts['Count']):
-        ax.text(i, count + 5, str(count), ha='center')
-    
-    st.pyplot(fig)
-    
-    # Articles per issue chart
-    st.subheader("Articles per Issue")
-    
-    # Prepare data for chart
-    issue_counts = df.groupby(['magazine', 'magazine_no']).size().reset_index()
-    issue_counts.columns = ['Magazine', 'Issue', 'Count']
-    
-    # Sort by magazine and issue number
-    issue_counts['Issue_Numeric'] = pd.to_numeric(issue_counts['Issue'], errors='coerce')
-    issue_counts = issue_counts.sort_values(['Magazine', 'Issue_Numeric'])
-    
-    # Create a grouped bar chart
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    # Plot separately for each magazine with different colors
-    magazines = issue_counts['Magazine'].unique()
-    colors = ['#1f77b4', '#ff7f0e']
-    
-    for i, magazine in enumerate(magazines):
-        data = issue_counts[issue_counts['Magazine'] == magazine]
-        bar_positions = np.arange(len(data)) + i*0.4
-        bars = ax.bar(bar_positions, data['Count'], width=0.4, label=magazine, color=colors[i % len(colors)])
-        
-        # Add issue labels
-        for j, (_, row) in enumerate(data.iterrows()):
-            ax.text(bar_positions[j], 0.5, str(row['Issue']), rotation=90, ha='center', va='bottom', fontsize=8)
-    
-    # Customize the chart
-    ax.set_ylabel('Number of Articles')
-    ax.set_title('Articles per Issue')
-    ax.set_xticks([])
-    ax.legend()
-    
-    st.pyplot(fig)
-    
-    # Top 10 authors
-    st.subheader("Top 10 Authors")
-    
-    # Calculate top authors
-    top_authors = df['author'].value_counts().head(10).reset_index()
-    top_authors.columns = ['Author', 'Count']
-    
-    # Create a horizontal bar chart
-    fig, ax = plt.subplots(figsize=(10, 8))
-    ax.barh(top_authors['Author'], top_authors['Count'], color='#1f77b4')
-    ax.set_xlabel('Number of Articles')
-    ax.set_title('Top 10 Authors by Article Count')
-    
-    # Add count labels
-    for i, count in enumerate(top_authors['Count']):
-        ax.text(count + 0.2, i, str(count), va='center')
-    
-    # Reverse y-axis to show highest count at the top
-    ax.invert_yaxis()
-    
-    st.pyplot(fig)
-    
-    # Theme distribution
-    st.subheader("Theme Distribution")
-    
-    # Calculate theme counts
-    theme_counts = df['theme'].value_counts().reset_index()
-    theme_counts.columns = ['Theme', 'Count']
-    
-    # Create a pie chart
-    fig, ax = plt.subplots(figsize=(10, 8))
-    wedges, texts, autotexts = ax.pie(
-        theme_counts['Count'], 
-        labels=theme_counts['Theme'], 
-        autopct='%1.1f%%',
-        textprops={'fontsize': 9}
+    # Create a bar chart using Plotly
+    fig = px.bar(
+        magazine_counts,
+        x='Magazine',
+        y='Count',
+        color='Magazine',
+        title='Articles by Magazine',
+        text='Count'
     )
     
-    # Equal aspect ratio ensures the pie chart is circular
-    ax.axis('equal')
-    ax.set_title('Distribution of Articles by Theme')
+    # Customize layout
+    fig.update_layout(
+        xaxis_title='Magazine',
+        yaxis_title='Number of Articles',
+        showlegend=False,
+        hovermode='closest'
+    )
     
-    # Make room for the labels
-    plt.tight_layout()
+    # Add count labels
+    fig.update_traces(
+        textposition='outside',
+        hovertemplate='<b>%{x}</b><br>Articles: %{y}'
+    )
     
-    st.pyplot(fig)
+    # Display the interactive chart
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Language distribution chart (if language field exists)
+    if 'language' in df.columns:
+        st.subheader("Language Distribution")
+        
+        # Prepare data for language chart
+        language_counts = df['language'].value_counts().reset_index()
+        language_counts.columns = ['Language', 'Count']
+        
+        # Create a pie chart using Plotly
+        fig = px.pie(
+            language_counts, 
+            values='Count', 
+            names='Language',
+            title='Articles by Language',
+            color='Language',
+            color_discrete_map={'ITA': '#1f77b4', 'ENG': '#ff7f0e', 'Unknown': '#cccccc'},
+            hole=0.4,  # Donut chart style
+        )
+        
+        # Customize layout
+        fig.update_layout(
+            legend_title_text='Language',
+            legend=dict(orientation="h", yanchor="bottom", y=-0.1, xanchor="center", x=0.5),
+            annotations=[dict(text='Language<br>Distribution', x=0.5, y=0.5, font_size=15, showarrow=False)]
+        )
+        
+        # Update traces
+        fig.update_traces(
+            textposition='inside',
+            textinfo='percent+label',
+            hoverinfo='label+percent+value',
+            marker=dict(line=dict(color='#FFFFFF', width=2))
+        )
+        
+        # Display the interactive chart
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Add a stacked bar chart showing languages by magazine
+        st.subheader("Languages by Magazine")
+        
+        # Group by magazine and language
+        magazine_language = df.groupby(['magazine', 'language']).size().reset_index()
+        magazine_language.columns = ['Magazine', 'Language', 'Count']
+        
+        # Create a stacked bar chart
+        fig = px.bar(
+            magazine_language,
+            x='Magazine',
+            y='Count',
+            color='Language',
+            color_discrete_map={'ITA': '#1f77b4', 'ENG': '#ff7f0e', 'Unknown': '#cccccc'},
+            title='Language Distribution by Magazine',
+            barmode='stack'
+        )
+        
+        # Customize layout
+        fig.update_layout(
+            xaxis_title='Magazine',
+            yaxis_title='Number of Articles',
+            legend_title='Language',
+            hovermode='closest'
+        )
+        
+        # Display the interactive chart
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Theme distribution chart
+    st.subheader("Theme Distribution")
+    
+    # Prepare data for theme chart
+    theme_counts = df['theme'].value_counts().reset_index()
+    theme_counts.columns = ['Theme', 'Count']
+    theme_counts = theme_counts.sort_values('Count', ascending=False)
+    
+    # Create a horizontal bar chart using Plotly
+    fig = px.bar(
+        theme_counts,
+        y='Theme',
+        x='Count',
+        color='Count',
+        color_continuous_scale='Blues',
+        title='Articles by Theme',
+        orientation='h'
+    )
+    
+    # Customize layout
+    fig.update_layout(
+        xaxis_title='Number of Articles',
+        yaxis_title='Theme',
+        yaxis=dict(categoryorder='total ascending'),
+        coloraxis_showscale=False,
+        hovermode='closest'
+    )
+    
+    # Add count labels
+    fig.update_traces(
+        texttemplate='%{x}',
+        textposition='outside',
+        hovertemplate='<b>%{y}</b><br>Articles: %{x}'
+    )
+    
+    # Display the interactive chart
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Top authors chart
+    st.subheader("Top 10 Authors")
+    
+    # Prepare data for authors chart
+    author_counts = df['author'].value_counts().head(10).reset_index()
+    author_counts.columns = ['Author', 'Count']
+    
+    # Create a horizontal bar chart using Plotly
+    fig = px.bar(
+        author_counts,
+        y='Author',
+        x='Count',
+        color='Count',
+        color_continuous_scale='Oranges',
+        title='Top 10 Authors by Article Count',
+        orientation='h'
+    )
+    
+    # Customize layout
+    fig.update_layout(
+        xaxis_title='Number of Articles',
+        yaxis_title='Author',
+        yaxis=dict(categoryorder='total ascending'),
+        coloraxis_showscale=False,
+        hovermode='closest'
+    )
+    
+    # Add count labels
+    fig.update_traces(
+        texttemplate='%{x}',
+        textposition='outside',
+        hovertemplate='<b>%{y}</b><br>Articles: %{x}'
+    )
+    
+    # Display the interactive chart
+    st.plotly_chart(fig, use_container_width=True)
 
 def show_validation(df: pd.DataFrame):
     """Display data validation checks and results"""
@@ -386,350 +462,106 @@ def run_data_validation(df: pd.DataFrame, expected_ranges: Dict[str, Set[int]], 
     
     return results
 
-def show_magazine_explorer(df: pd.DataFrame):
-    """Display interactive exploration by magazine and issue"""
-    st.title("🔎 Magazine Explorer")
+def show_explorer(df: pd.DataFrame):
+    """Unified explorer that combines magazine and article browsing"""
+    st.title("🔎 Content Explorer")
     
-    st.write("""
-    Explore magazine contents by selecting a specific magazine and issue number.
-    You can see all articles for the selected issue and analyze their metadata.
-    """)
-    
-    # Create filters for magazine and issue
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        magazines = sorted(df['magazine'].unique())
-        selected_magazine = st.selectbox("Select Magazine", magazines)
-    
-    # Filter issues based on selected magazine
-    filtered_df = df[df['magazine'] == selected_magazine]
-    issues = sorted(filtered_df['magazine_no'].unique(), key=lambda x: float(x) if str(x).replace('.', '', 1).isdigit() else 0)
-    
-    with col2:
-        selected_issue = st.selectbox("Select Issue", issues)
-    
-    # Filter to selected issue
-    issue_df = filtered_df[filtered_df['magazine_no'] == selected_issue]
-    
-    # Display issue information
-    st.subheader(f"{selected_magazine} - Issue {selected_issue}")
-    st.write(f"Found {len(issue_df)} articles in this issue.")
-    
-    # Display articles in this issue
-    st.write("### Articles in this issue")
-    
-    # Display summary statistics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Number of Articles", len(issue_df))
-    with col2:
-        st.metric("Unique Authors", issue_df['author'].nunique())
-    with col3:
-        unique_themes = issue_df['theme'].nunique()
-        st.metric("Themes Covered", unique_themes)
-    
-    # Display article list
-    for i, (_, article) in enumerate(issue_df.iterrows(), 1):
-        with st.expander(f"{i}. {article['title']} (by {article['author']})"):
-            col1, col2 = st.columns([2, 1])
-            
-            with col1:
-                st.write("**Abstract:**")
-                st.write(article['abstract'])
-                
-                st.write("**Keywords:**")
-                st.write(article['keywords'])
-            
-            with col2:
-                st.write("**Theme:**", article['theme'])
-                st.write("**Format:**", article['format'])
-                st.write("**Geographic Area:**", article['geographic_area'])
-    
-    # Display theme distribution for this issue
-    st.subheader("Theme Distribution in this Issue")
-    
-    theme_counts = issue_df['theme'].value_counts()
-    
-    # Create a pie chart for themes
-    fig, ax = plt.subplots(figsize=(8, 6))
-    
-    # Only create the pie chart if we have multiple themes
-    if len(theme_counts) > 1:
-        wedges, texts, autotexts = ax.pie(
-            theme_counts, 
-            labels=theme_counts.index, 
-            autopct='%1.1f%%',
-            textprops={'fontsize': 9}
-        )
-        ax.axis('equal')
-        ax.set_title('Theme Distribution')
-        st.pyplot(fig)
-    else:
-        st.write(f"All articles share the same theme: {theme_counts.index[0]}")
-
-def show_article_browser(df: pd.DataFrame):
-    """Display interactive article browser with search and filters"""
-    st.title("📚 Article Browser")
-    
-    st.write("""
-    Browse and search all articles in the dataset. 
-    Use the filters and search to find specific articles of interest.
-    """)
-    
-    # Create sidebar filters
-    st.sidebar.subheader("Filters")
-    
-    # Magazine filter
-    magazines = sorted(df['magazine'].unique())
-    selected_magazines = st.sidebar.multiselect("Magazine", magazines, default=magazines)
-    
-    # Theme filter
-    themes = sorted(df['theme'].unique())
-    selected_themes = st.sidebar.multiselect("Theme", themes)
-    
-    # Format filter
-    formats = sorted(df['format'].unique())
-    selected_formats = st.sidebar.multiselect("Format", formats)
-    
-    # Search box
-    search_query = st.sidebar.text_input("Search (title, abstract, keywords)")
+    # Filters in expander
+    with st.expander("Filters", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            # Magazine filter
+            magazines = ['All'] + sorted(df['magazine'].unique().tolist())
+            selected_magazine = st.selectbox("Magazine", magazines)
+        
+        with col2:
+            # Issue number filter
+            if selected_magazine == 'All':
+                issues = ['All'] + sorted(df['magazine_no'].unique().tolist(), 
+                                         key=lambda x: float(x) if x.replace('.', '', 1).isdigit() else float('inf'))
+            else:
+                issues = ['All'] + sorted(df[df['magazine'] == selected_magazine]['magazine_no'].unique().tolist(),
+                                         key=lambda x: float(x) if x.replace('.', '', 1).isdigit() else float('inf'))
+            selected_issue = st.selectbox("Issue", issues)
+        
+        with col3:
+            # Theme filter
+            themes = ['All'] + sorted(df['theme'].unique().tolist())
+            selected_theme = st.selectbox("Theme", themes)
+        
+        # Additional filters row
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Author filter
+            authors = ['All'] + sorted(df['author'].unique().tolist())
+            selected_author = st.selectbox("Author", authors)
+        
+        with col2:
+            # Search by keyword or title
+            search_term = st.text_input("Search by title, keywords, or content")
     
     # Apply filters
     filtered_df = df.copy()
+    if selected_magazine != 'All':
+        filtered_df = filtered_df[filtered_df['magazine'] == selected_magazine]
+    if selected_issue != 'All':
+        filtered_df = filtered_df[filtered_df['magazine_no'] == selected_issue]
+    if selected_theme != 'All':
+        filtered_df = filtered_df[filtered_df['theme'] == selected_theme]
+    if selected_author != 'All':
+        filtered_df = filtered_df[filtered_df['author'] == selected_author]
+    if search_term:
+        # Search in multiple columns
+        search_mask = (
+            filtered_df['title'].str.contains(search_term, case=False, na=False) | 
+            filtered_df['keywords'].str.contains(search_term, case=False, na=False) | 
+            filtered_df['abstract'].str.contains(search_term, case=False, na=False) |
+            filtered_df['abstract_ita'].str.contains(search_term, case=False, na=False) |
+            filtered_df['abstract_eng'].str.contains(search_term, case=False, na=False) |
+            filtered_df['geographic_area'].str.contains(search_term, case=False, na=False)
+        )
+        filtered_df = filtered_df[search_mask]
     
-    if selected_magazines:
-        filtered_df = filtered_df[filtered_df['magazine'].isin(selected_magazines)]
+    # Display results count
+    st.write(f"Found {len(filtered_df)} articles")
     
-    if selected_themes:
-        filtered_df = filtered_df[filtered_df['theme'].isin(selected_themes)]
-        
-    if selected_formats:
-        filtered_df = filtered_df[filtered_df['format'].isin(selected_formats)]
-    
-    # Apply search if provided
-    if search_query:
-        # Search in title, abstract, and keywords
-        title_match = filtered_df['title'].str.contains(search_query, case=False, na=False)
-        abstract_match = filtered_df['abstract'].str.contains(search_query, case=False, na=False)
-        keywords_match = filtered_df['keywords'].str.contains(search_query, case=False, na=False)
-        
-        filtered_df = filtered_df[title_match | abstract_match | keywords_match]
-    
-    # Display results
-    st.write(f"Found {len(filtered_df)} articles matching your criteria.")
-    
-    # Show sort options
-    sort_options = {
-        "Magazine & Issue": lambda x: (x['magazine'], x['magazine_no_numeric']),
-        "Title": lambda x: x['title'],
-        "Author": lambda x: x['author'],
-        "Theme": lambda x: x['theme']
-    }
-    
-    sort_by = st.selectbox("Sort by", list(sort_options.keys()))
-    
-    # Apply sorting
-    filtered_df = filtered_df.sort_values(by=sort_options[sort_by])
-    
-    # Display articles in pages
-    articles_per_page = 10
-    total_pages = (len(filtered_df) + articles_per_page - 1) // articles_per_page
-    
-    if total_pages > 0:
-        # Create page selection
-        if total_pages > 1:
-            page = st.selectbox("Page", list(range(1, total_pages + 1)))
-        else:
-            page = 1
-        
-        # Calculate start and end indices
-        start_idx = (page - 1) * articles_per_page
-        end_idx = min(start_idx + articles_per_page, len(filtered_df))
-        
-        # Display articles for current page
-        page_df = filtered_df.iloc[start_idx:end_idx]
-        
-        for i, (_, article) in enumerate(page_df.iterrows(), start_idx + 1):
-            with st.expander(f"{i}. {article['title']} ({article['magazine']} {article['magazine_no']})"):
-                col1, col2 = st.columns([2, 1])
+    # Display articles
+    for i, (_, row) in enumerate(filtered_df.iterrows()):
+        with st.expander(f"{row['title']} ({row['magazine']} {row['magazine_no']})"):
+            col1, col2 = st.columns([1, 3])
+            
+            with col1:
+                # Try to display preview image if available
+                if 'preview_image_path' in row and row['preview_image_path'] and row['preview_image_path'] != 'nan':
+                    if os.path.exists(row['preview_image_path']):
+                        st.image(row['preview_image_path'], width=200)
+                    else:
+                        st.info("Image not found")
+            
+            with col2:
+                # Display metadata
+                st.write(f"**Author:** {row['author']}")
+                st.write(f"**Language:** {row.get('language', 'Not specified')}")
                 
-                with col1:
-                    st.write(f"**Author:** {article['author']}")
-                    st.write("**Abstract:**")
-                    st.write(article['abstract'])
-                    
-                    st.write("**Keywords:**")
-                    st.write(article['keywords'])
+                # Display abstract based on language
+                if 'language' in row and row['language'] == 'ITA' and 'abstract_ita' in row and row['abstract_ita']:
+                    st.write(f"**Abstract (ITA):** {row['abstract_ita']}")
+                    if 'abstract_eng' in row and row['abstract_eng']:
+                        st.write(f"**Abstract (ENG):** {row['abstract_eng']}")
+                elif 'language' in row and row['language'] == 'ENG' and 'abstract_eng' in row and row['abstract_eng']:
+                    st.write(f"**Abstract (ENG):** {row['abstract_eng']}")
+                    if 'abstract_ita' in row and row['abstract_ita']:
+                        st.write(f"**Abstract (ITA):** {row['abstract_ita']}")
+                else:
+                    # Fallback to original abstract
+                    st.write(f"**Abstract:** {row['abstract']}")
                 
-                with col2:
-                    st.write("**Theme:**", article['theme'])
-                    st.write("**Format:**", article['format'])
-                    st.write("**Geographic Area:**", article['geographic_area'])
-                    
-                    # Display file path
-                    if 'file_path' in article:
-                        st.write("**File Path:**")
-                        st.text(os.path.basename(article['file_path']))
-    else:
-        st.warning("No articles found matching your criteria.")
-
-def show_theme_analysis(df: pd.DataFrame):
-    """Display theme-based analysis with trend charts"""
-    st.title("📊 Theme Analysis")
-    
-    st.write("""
-    This section analyzes the distribution of themes across magazines and issues,
-    showing trends and patterns in the content.
-    """)
-    
-    # Top themes overall
-    st.subheader("Top Themes Overall")
-    
-    # Calculate theme counts
-    theme_counts = df['theme'].value_counts()
-    
-    # Create a horizontal bar chart for themes
-    fig, ax = plt.subplots(figsize=(10, 8))
-    theme_counts.plot(kind='barh', ax=ax)
-    ax.set_xlabel('Number of Articles')
-    ax.set_title('Distribution of Themes')
-    ax.invert_yaxis()  # Invert to show highest count at the top
-    
-    # Add count labels
-    for i, count in enumerate(theme_counts):
-        ax.text(count + 0.5, i, str(count), va='center')
-    
-    st.pyplot(fig)
-    
-    # Theme trends over time for each magazine
-    st.subheader("Theme Trends Across Issues")
-    
-    # Create radio button to select magazine
-    magazine = st.radio("Select Magazine", sorted(df['magazine'].unique()))
-    
-    # Filter to selected magazine
-    magazine_df = df[df['magazine'] == magazine]
-    
-    # Create heatmap of themes across issues
-    st.write(f"### Theme Distribution for {magazine}")
-    
-    # Get top 5 themes for this magazine
-    top_themes = magazine_df['theme'].value_counts().head(5).index.tolist()
-    selected_themes = st.multiselect("Select Themes to Display", 
-                                   sorted(magazine_df['theme'].unique()), 
-                                   default=top_themes)
-    
-    if selected_themes:
-        # Filter to selected themes
-        theme_df = magazine_df[magazine_df['theme'].isin(selected_themes)]
-        
-        # Group by issue and theme, count articles
-        theme_issue_counts = theme_df.groupby(['magazine_no', 'theme']).size().unstack().fillna(0)
-        
-        # Sort by issue number
-        theme_issue_counts['issue_numeric'] = pd.to_numeric(theme_issue_counts.index, errors='coerce')
-        theme_issue_counts = theme_issue_counts.sort_values('issue_numeric')
-        theme_issue_counts = theme_issue_counts.drop(columns=['issue_numeric'])
-        
-        # Create a line chart
-        fig, ax = plt.subplots(figsize=(12, 6))
-        
-        for theme in theme_issue_counts.columns:
-            ax.plot(theme_issue_counts.index, theme_issue_counts[theme], marker='o', label=theme)
-        
-        ax.set_xlabel('Issue Number')
-        ax.set_ylabel('Number of Articles')
-        ax.set_title(f'Theme Trends Across {magazine} Issues')
-        ax.legend()
-        ax.grid(True, linestyle='--', alpha=0.7)
-        
-        st.pyplot(fig)
-    else:
-        st.warning("Please select at least one theme to display.")
-    
-    # Top authors by theme
-    st.subheader("Top Authors by Theme")
-    
-    # Let user select a theme
-    selected_theme = st.selectbox("Select Theme", sorted(df['theme'].unique()))
-    
-    # Filter to the selected theme
-    theme_df = df[df['theme'] == selected_theme]
-    
-    # Count authors
-    author_counts = theme_df['author'].value_counts().head(10)
-    
-    # Create horizontal bar chart
-    fig, ax = plt.subplots(figsize=(10, 8))
-    author_counts.plot(kind='barh', ax=ax)
-    ax.set_xlabel('Number of Articles')
-    ax.set_title(f'Top Authors for Theme: {selected_theme}')
-    ax.invert_yaxis()  # Invert to show highest count at the top
-    
-    # Add count labels
-    for i, count in enumerate(author_counts):
-        ax.text(count + 0.2, i, str(count), va='center')
-    
-    st.pyplot(fig)
-    
-    # Geographic distribution by theme
-    st.subheader("Geographic Focus by Theme")
-    
-    # Get geographic areas used more than once
-    geo_counts = df.groupby(['theme', 'geographic_area']).size().reset_index()
-    geo_counts.columns = ['Theme', 'Geographic_Area', 'Count']
-    geo_counts = geo_counts[geo_counts['Count'] > 1]  # Only include counts > 1
-    
-    # Only include non-empty and not "Not Specified" geographic areas
-    geo_counts = geo_counts[
-        (geo_counts['Geographic_Area'].notna()) & 
-        (geo_counts['Geographic_Area'] != '') &
-        (geo_counts['Geographic_Area'] != 'Not Specified')
-    ]
-    
-    # Get top geographic areas
-    top_areas = geo_counts.groupby('Geographic_Area')['Count'].sum().nlargest(10).index.tolist()
-    
-    # Filter to only include top areas
-    geo_counts = geo_counts[geo_counts['Geographic_Area'].isin(top_areas)]
-    
-    # Create a pivot table
-    pivot = geo_counts.pivot_table(index='Theme', columns='Geographic_Area', values='Count', fill_value=0)
-    
-    # Sort by total count
-    pivot['total'] = pivot.sum(axis=1)
-    pivot = pivot.sort_values('total', ascending=False)
-    pivot = pivot.drop(columns=['total'])
-    
-    # Create a heatmap
-    fig, ax = plt.subplots(figsize=(12, 10))
-    
-    if not pivot.empty:
-        im = ax.imshow(pivot, cmap='YlOrRd')
-        
-        # Set ticks
-        ax.set_xticks(np.arange(len(pivot.columns)))
-        ax.set_yticks(np.arange(len(pivot.index)))
-        
-        # Set tick labels
-        ax.set_xticklabels(pivot.columns, rotation=45, ha='right')
-        ax.set_yticklabels(pivot.index)
-        
-        # Loop over data to create text annotations
-        for i in range(len(pivot.index)):
-            for j in range(len(pivot.columns)):
-                if pivot.iloc[i, j] > 0:
-                    ax.text(j, i, int(pivot.iloc[i, j]), ha="center", va="center", 
-                            color="black" if pivot.iloc[i, j] < pivot.values.max() * 0.7 else "white")
-        
-        ax.set_title('Geographic Focus by Theme')
-        plt.colorbar(im, ax=ax, label='Number of Articles')
-        plt.tight_layout()
-        
-        st.pyplot(fig)
-    else:
-        st.warning("Not enough geographic data to create a meaningful visualization.")
+                st.write(f"**Theme:** {row['theme']}")
+                st.write(f"**Format:** {row['format']}")
+                st.write(f"**Geographic Area:** {row['geographic_area']}")
+                st.write(f"**Keywords:** {row['keywords']}")
 
 if __name__ == "__main__":
     setup_page()

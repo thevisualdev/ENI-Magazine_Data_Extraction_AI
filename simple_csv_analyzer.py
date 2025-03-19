@@ -2,11 +2,29 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
 import numpy as np
 import os
 from collections import Counter, defaultdict
 import re
 from typing import Dict, List, Tuple, Any, Set
+# Import visualization functions from the new module
+from visualizations import (
+    plot_magazine_distribution,
+    plot_language_distribution,
+    plot_theme_distribution,
+    plot_theme_pie,
+    plot_top_authors,
+    plot_issue_distribution,
+    plot_format_distribution,
+    plot_format_by_magazine,
+    plot_format_pie,
+    plot_theme_trends_plotly,
+    show_overview_charts,
+    build_keyword_network,
+    render_keyword_network
+)
 
 # Set page configuration
 st.set_page_config(
@@ -51,19 +69,18 @@ df = load_data()
 if df is None:
     st.stop()
 
-# Navigation
+# Update navigation to match app.py structure
 pages = [
-    "Overview", 
-    "Magazine Explorer",
-    "Article Browser",
-    "Data Validation",
-    "Theme Analysis"
+    "📈 Overview", 
+    "🔍 Data Validation",
+    "📊 Theme Analysis",
+    "🔗 Keywords"
 ]
 
 page = st.sidebar.radio("Select Page", pages)
 
 # Basic stats
-if page == "Overview":
+if page == "📈 Overview":
     st.header("Data Overview")
     
     # Display basic stats
@@ -86,201 +103,49 @@ if page == "Overview":
     
     # Articles per magazine
     st.subheader("Articles per Magazine")
-    magazine_counts = df['magazine'].value_counts().reset_index()
-    magazine_counts.columns = ['Magazine', 'Count']
+    fig = plot_magazine_distribution(df)
+    st.plotly_chart(fig, use_container_width=True)
     
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.bar(magazine_counts['Magazine'], magazine_counts['Count'], color=['#1f77b4', '#ff7f0e'])
-    ax.set_ylabel('Number of Articles')
-    ax.set_title('Articles per Magazine')
-    
-    # Add labels
-    for i, count in enumerate(magazine_counts['Count']):
-        ax.text(i, count + 5, str(count), ha='center')
-    
-    st.pyplot(fig)
-    
-    # Articles per issue
+    # Articles per issue - using the new faceted chart
     st.subheader("Articles per Issue")
-    issue_counts = df.groupby(['magazine', 'magazine_no']).size().reset_index()
-    issue_counts.columns = ['Magazine', 'Issue', 'Count']
-    
-    # Sort by magazine and issue
-    issue_counts['Issue_Numeric'] = pd.to_numeric(issue_counts['Issue'], errors='coerce')
-    issue_counts = issue_counts.sort_values(['Magazine', 'Issue_Numeric'])
-    
-    # Group by magazine
-    magazines = issue_counts['Magazine'].unique()
-    
-    for magazine in magazines:
-        st.write(f"### {magazine}")
-        magazine_data = issue_counts[issue_counts['Magazine'] == magazine]
-        
-        # Create bar chart
-        fig, ax = plt.subplots(figsize=(12, 5))
-        bars = ax.bar(magazine_data['Issue'], magazine_data['Count'], color='#1f77b4')
-        
-        # Add count labels
-        for bar in bars:
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                    str(int(height)), ha='center', va='bottom')
-        
-        ax.set_xlabel('Issue Number')
-        ax.set_ylabel('Number of Articles')
-        ax.set_title(f'Articles per Issue in {magazine}')
-        
-        # Use thinner bars with some spacing
-        plt.xticks(rotation=45)
-        
-        st.pyplot(fig)
+    fig = plot_issue_distribution(df)
+    st.plotly_chart(fig, use_container_width=True)
     
     # Top authors
     st.subheader("Top 10 Authors")
-    top_authors = df['author'].value_counts().head(10)
+    fig = plot_top_authors(df)
+    st.plotly_chart(fig, use_container_width=True)
     
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.barh(top_authors.index[::-1], top_authors.values[::-1], color='#1f77b4')
-    ax.set_xlabel('Number of Articles')
-    ax.set_title('Top 10 Authors by Article Count')
-    
-    # Add count labels
-    for i, count in enumerate(top_authors.values[::-1]):
-        ax.text(count + 0.2, i, str(count), va='center')
-    
-    st.pyplot(fig)
-    
-    # Theme distribution
-    st.subheader("Theme Distribution")
-    theme_counts = df['theme'].value_counts()
-    
-    fig, ax = plt.subplots(figsize=(8, 8))
-    wedges, texts, autotexts = ax.pie(
-        theme_counts, 
-        labels=theme_counts.index, 
-        autopct='%1.1f%%',
-        textprops={'fontsize': 9}
-    )
-    ax.axis('equal')
-    plt.tight_layout()
-    
-    st.pyplot(fig)
-
-elif page == "Magazine Explorer":
-    st.header("Magazine Explorer")
-    
-    st.write("""
-    Explore articles by magazine and issue number.
-    """)
-    
-    # Magazine and issue selection
+    # Format distribution chart - now with by-magazine breakdown
+    st.subheader("Format Distribution")
     col1, col2 = st.columns(2)
     
     with col1:
-        magazines = sorted(df['magazine'].unique())
-        selected_magazine = st.selectbox("Select Magazine", magazines)
+        fig = plot_format_distribution(df)
+        if fig is not None:
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Format information not available.")
+    
+    with col2:
+        fig = plot_format_by_magazine(df)
+        if fig is not None:
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Format information not available.")
+    
+    # Language distribution if available
+    if 'language' in df.columns:
+        st.subheader("Language Distribution")
+        language_pie, language_stacked = plot_language_distribution(df)
         
-    # Filter by magazine
-    magazine_df = df[df['magazine'] == selected_magazine]
-    
-    with col2:
-        issues = sorted(magazine_df['magazine_no'].unique(), 
-                       key=lambda x: float(x) if str(x).replace('.', '', 1).isdigit() else 0)
-        selected_issue = st.selectbox("Select Issue", issues)
-    
-    # Filter by issue
-    issue_df = magazine_df[magazine_df['magazine_no'] == selected_issue]
-    
-    # Display issue info
-    st.subheader(f"{selected_magazine} - Issue {selected_issue}")
-    st.write(f"Found {len(issue_df)} articles in this issue")
-    
-    # Display metrics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Number of Articles", len(issue_df))
-    with col2:
-        st.metric("Unique Authors", issue_df['author'].nunique())
-    with col3:
-        st.metric("Themes Covered", issue_df['theme'].nunique())
-    
-    # Display articles
-    st.subheader("Articles in this issue")
-    
-    for i, (_, article) in enumerate(issue_df.iterrows(), 1):
-        with st.expander(f"{i}. {article['title']} (by {article['author']})"):
-            # Display article details
-            st.write(f"**Abstract:** {article['abstract']}")
-            st.write(f"**Theme:** {article['theme']}")
-            st.write(f"**Format:** {article['format']}")
-            st.write(f"**Geographic Area:** {article['geographic_area']}")
-            st.write(f"**Keywords:** {article['keywords']}")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(language_pie, use_container_width=True)
+        with col2:
+            st.plotly_chart(language_stacked, use_container_width=True)
 
-elif page == "Article Browser":
-    st.header("Article Browser")
-    
-    st.write("""
-    Browse and search for specific articles.
-    """)
-    
-    # Search and filter options
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        search_term = st.text_input("Search in Title, Abstract or Keywords")
-    
-    with col2:
-        # Theme filter
-        themes = ["All Themes"] + sorted(df['theme'].unique().tolist())
-        selected_theme = st.selectbox("Filter by Theme", themes)
-    
-    # Apply filters
-    filtered_df = df.copy()
-    
-    # Apply theme filter
-    if selected_theme != "All Themes":
-        filtered_df = filtered_df[filtered_df['theme'] == selected_theme]
-    
-    # Apply search filter
-    if search_term:
-        # Search in title, abstract and keywords
-        title_match = filtered_df['title'].str.contains(search_term, case=False, na=False)
-        abstract_match = filtered_df['abstract'].str.contains(search_term, case=False, na=False)
-        keywords_match = filtered_df['keywords'].str.contains(search_term, case=False, na=False)
-        
-        filtered_df = filtered_df[title_match | abstract_match | keywords_match]
-    
-    # Display filtered results
-    st.write(f"Found {len(filtered_df)} articles matching your criteria")
-    
-    # Display results in pages
-    articles_per_page = 10
-    num_pages = max(1, (len(filtered_df) + articles_per_page - 1) // articles_per_page)
-    
-    if len(filtered_df) > 0:
-        page_num = st.number_input("Page", min_value=1, max_value=num_pages, value=1)
-        
-        # Calculate start and end indices
-        start_idx = (page_num - 1) * articles_per_page
-        end_idx = min(start_idx + articles_per_page, len(filtered_df))
-        
-        # Get articles for current page
-        page_df = filtered_df.iloc[start_idx:end_idx]
-        
-        # Display articles
-        for i, (_, article) in enumerate(page_df.iterrows(), start_idx + 1):
-            with st.expander(f"{i}. {article['title']} ({article['magazine']} {article['magazine_no']})"):
-                # Display article details
-                st.write(f"**Author:** {article['author']}")
-                st.write(f"**Abstract:** {article['abstract']}")
-                st.write(f"**Theme:** {article['theme']}")
-                st.write(f"**Format:** {article['format']}")
-                st.write(f"**Geographic Area:** {article['geographic_area']}")
-                st.write(f"**Keywords:** {article['keywords']}")
-    else:
-        st.info("No articles found matching your criteria.")
-
-elif page == "Data Validation":
+elif page == "🔍 Data Validation":
     st.header("Data Validation")
     
     st.write("""
@@ -426,7 +291,7 @@ elif page == "Data Validation":
         else:
             st.success("✅ No null values found in required fields")
 
-elif page == "Theme Analysis":
+elif page == "📊 Theme Analysis":
     st.header("Theme Analysis")
     
     st.write("""
@@ -435,24 +300,11 @@ elif page == "Theme Analysis":
     
     # Overall theme distribution
     st.subheader("Overall Theme Distribution")
-    
-    theme_counts = df['theme'].value_counts()
-    
-    # Create a bar chart for themes
-    fig, ax = plt.subplots(figsize=(12, 6))
-    theme_counts.plot(kind='barh', ax=ax)
-    ax.set_xlabel('Number of Articles')
-    ax.set_title('Distribution of Themes')
-    ax.invert_yaxis()  # Show highest count at the top
-    
-    # Add count labels
-    for i, count in enumerate(theme_counts):
-        ax.text(count + 1, i, str(count), va='center')
-    
-    st.pyplot(fig)
+    fig = plot_theme_distribution(df, top_n=15, orientation='h')
+    st.plotly_chart(fig, use_container_width=True)
     
     # Themes by magazine
-    st.subheader("Themes by Magazine")
+    st.subheader("Theme Distribution by Magazine")
     
     # Create a radio button to select magazine
     magazine = st.radio("Select Magazine", sorted(df['magazine'].unique()))
@@ -460,23 +312,15 @@ elif page == "Theme Analysis":
     # Filter to selected magazine
     magazine_df = df[df['magazine'] == magazine]
     
-    # Calculate theme counts for this magazine
-    magazine_theme_counts = magazine_df['theme'].value_counts()
+    if len(magazine_df) == 0:
+        st.warning(f"No articles found for magazine: {magazine}")
+        st.stop()
     
-    # Create a pie chart
-    fig, ax = plt.subplots(figsize=(8, 8))
-    wedges, texts, autotexts = ax.pie(
-        magazine_theme_counts, 
-        labels=magazine_theme_counts.index, 
-        autopct='%1.1f%%',
-        textprops={'fontsize': 9}
-    )
-    ax.axis('equal')
-    ax.set_title(f'Theme Distribution in {magazine}')
+    # Plot theme pie chart for this magazine
+    fig = plot_theme_pie(magazine_df, title=f"Theme Distribution in {magazine}")
+    st.plotly_chart(fig, use_container_width=True)
     
-    st.pyplot(fig)
-    
-    # Theme trends across issues
+    # Theme trends across issues - now using Plotly
     st.subheader("Theme Trends Across Issues")
     
     # Get top 5 themes for this magazine
@@ -490,32 +334,95 @@ elif page == "Theme Analysis":
     )
     
     if selected_themes:
-        # Filter to selected themes
-        theme_df = magazine_df[magazine_df['theme'].isin(selected_themes)]
-        
-        # Group by issue and theme
-        try:
-            theme_issue_counts = theme_df.groupby(['magazine_no', 'theme']).size().unstack().fillna(0)
-            
-            # Sort by issue number
-            theme_issue_counts['issue_numeric'] = pd.to_numeric(theme_issue_counts.index, errors='coerce')
-            theme_issue_counts = theme_issue_counts.sort_values('issue_numeric')
-            theme_issue_counts = theme_issue_counts.drop(columns=['issue_numeric'])
-            
-            # Create a line chart
-            fig, ax = plt.subplots(figsize=(12, 6))
-            
-            for theme in theme_issue_counts.columns:
-                ax.plot(theme_issue_counts.index, theme_issue_counts[theme], marker='o', label=theme)
-            
-            ax.set_xlabel('Issue Number')
-            ax.set_ylabel('Number of Articles')
-            ax.set_title(f'Theme Trends Across {magazine} Issues')
-            ax.legend()
-            ax.grid(True, linestyle='--', alpha=0.7)
-            
-            st.pyplot(fig)
-        except:
+        # Use the new Plotly-based theme trends function
+        fig = plot_theme_trends_plotly(df, magazine, selected_themes)
+        if fig is not None:
+            st.plotly_chart(fig, use_container_width=True)
+        else:
             st.warning("Not enough data to create theme trends chart for the selected themes.")
     else:
-        st.info("Please select at least one theme to display.") 
+        st.info("Please select at least one theme to display.")
+
+elif page == "🔗 Keywords":
+    st.header("Keyword Network Analysis")
+    
+    st.write("""
+    Explore relationships between keywords that appear together in articles.
+    This visualization shows how keywords are connected, with the size of nodes 
+    indicating how frequently a keyword is used.
+    """)
+    
+    # Add filtering options
+    min_weight = st.slider(
+        "Minimum co-occurrence (link weight)", 
+        min_value=1, 
+        max_value=5, 
+        value=1,
+        help="Filter links by minimum number of times keywords appear together"
+    )
+    
+    max_nodes = st.slider(
+        "Maximum number of nodes", 
+        min_value=20, 
+        max_value=200, 
+        value=100,
+        help="Limit the number of nodes to improve performance"
+    )
+    
+    # Build network data
+    with st.spinner("Building keyword network..."):
+        network_data = build_keyword_network(df)
+        
+        # Filter links by weight
+        if min_weight > 1:
+            network_data["links"] = [link for link in network_data["links"] if link["weight"] >= min_weight]
+        
+        # Count node connections after filtering links
+        node_connections = {}
+        for link in network_data["links"]:
+            node_connections[link["source"]] = node_connections.get(link["source"], 0) + 1
+            node_connections[link["target"]] = node_connections.get(link["target"], 0) + 1
+        
+        # Filter nodes by connection count and limit to max_nodes
+        connected_nodes = sorted(node_connections.items(), key=lambda x: x[1], reverse=True)
+        if len(connected_nodes) > max_nodes:
+            connected_nodes = connected_nodes[:max_nodes]
+            
+        # Keep only the top nodes
+        top_node_ids = {node[0] for node in connected_nodes}
+        network_data["nodes"] = [node for node in network_data["nodes"] if node["id"] in top_node_ids]
+        network_data["links"] = [
+            link for link in network_data["links"] 
+            if link["source"] in top_node_ids and link["target"] in top_node_ids
+        ]
+    
+    st.caption(f"Showing {len(network_data['nodes'])} keywords with {len(network_data['links'])} connections")
+    
+    # Render the network visualization
+    with st.spinner("Rendering network visualization..."):
+        render_keyword_network(network_data)
+    
+    # Add instructions
+    with st.expander("How to use the visualization"):
+        st.markdown("""
+        - **Zoom**: Use mouse wheel to zoom in and out
+        - **Pan**: Click and drag the background to move the view
+        - **Move nodes**: Click and drag nodes to reposition them
+        - **View details**: Hover over a node to see the keyword name
+        - **Colors**: Orange nodes are keywords that also appear as themes
+        """)
+        
+    # Add explanation of visualization
+    with st.expander("About this visualization"):
+        st.markdown("""
+        This network graph represents the relationships between keywords in the magazine articles:
+        
+        - Each **node** represents a keyword from the articles
+        - **Links** connect keywords that appear together in the same article
+        - **Node size** indicates how frequently the keyword appears across articles
+        - **Link thickness** shows how often the keywords appear together
+        - **Colors** distinguish between regular keywords (blue) and those that also appear as themes (orange)
+        
+        The visualization uses a force-directed layout algorithm that places connected nodes closer together,
+        revealing clusters of related keywords.
+        """) 

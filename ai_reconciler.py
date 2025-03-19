@@ -4,6 +4,7 @@ import os
 from typing import Dict, Any, Optional
 from openai import OpenAI
 import dotenv
+import traceback
 
 # Load environment variables from .env file
 dotenv.load_dotenv()
@@ -70,8 +71,8 @@ def clean_json_content(content: str) -> str:
             # Extract the JSON content between the backticks
             if start_json > 0 and end_json > start_json:
                 content = content[start_json:end_json].strip()
-        except:
-            pass
+        except Exception as e:
+            print(f"Error extracting from code blocks: {e}")
         
         # Fallback: remove all ``` markers
         content = content.replace('```json', '').replace('```', '').strip()
@@ -122,20 +123,23 @@ def clean_json_content(content: str) -> str:
             
             # If that still fails, try to extract individual fields
             fallback = {
-                "magazine": "",
-                "magazine_no": "",
-                "author": "",
-                "title": "",
-                "abstract": "Could not parse full JSON response",
-                "theme": "",
-                "format": "",
-                "geographic_area": "",
-                "keywords": ""
+                "magazine": "Unknown",
+                "magazine_no": "Unknown",
+                "author": "Unknown",
+                "title": "Unknown",
+                "language": "Unknown",
+                "abstract_ita": "Impossibile analizzare la risposta JSON",
+                "abstract_eng": "Could not parse JSON response",
+                "theme": "Unknown",
+                "format": "Unknown",
+                "geographic_area": "Unknown",
+                "keywords": "errore, analisi, fallita"
             }
             
             # Try to extract field values with regex
-            fields = ["magazine", "magazine_no", "author", "title", "abstract", 
-                       "theme", "format", "geographic_area", "keywords"]
+            fields = ["magazine", "magazine_no", "author", "title", "language", 
+                     "abstract_ita", "abstract_eng", "theme", "format", 
+                     "geographic_area", "keywords"]
             
             for field in fields:
                 # Try to extract the field with a simple pattern
@@ -148,137 +152,255 @@ def clean_json_content(content: str) -> str:
             print(f"Created fallback JSON with {sum(1 for v in fallback.values() if v)} fields")
             return json.dumps(fallback)
 
-def reconcile_metadata(file_data: Dict[str, Any], config: Dict[str, Any] = None) -> Dict[str, str]:
+def extract_json_from_response(content):
     """
-    Reconcile metadata using OpenAI API.
+    Extract and clean JSON from the OpenAI API response for reconciliation.
     
     Args:
-        file_data: File data with extracted fields
-        config: Configuration dictionary
+        content: String content from OpenAI API response
         
     Returns:
-        Dict containing reconciled fields
+        Cleaned JSON string ready for parsing
     """
     try:
-        # Make sure we have a valid config object
-        if config is None:
-            # Load config if not provided
+        # Skip if empty
+        if not content:
+            return "{}"
+            
+        # Clean the JSON content - remove markdown code blocks if present
+        if '```' in content:
+            # Try to extract between markdown code blocks
             try:
-                config = load_config()
-                print("Loaded config from file as none was provided for reconciliation")
-            except Exception as config_error:
-                print(f"Error loading config for reconciliation: {config_error}")
-                # Create a minimal default config
-                config = {
-                    'openai': {
-                        'model': 'gpt-3.5-turbo',
-                        'temperature': 0.1,
-                        'max_tokens': 1000
-                    },
-                    'prompts': {
-                        'reconcile_metadata': "Reconcile the following metadata from file: {file_path}\nMagazine: {magazine}\nMagazine Number: {magazine_no}\nAuthor: {author}\nTitle: {title}\n\nText content: {text_content}\n\nReturn a JSON with corrected fields."
-                    }
-                }
-                print("Created default config as fallback for reconciliation")
+                start_block = content.find('```')
+                language_indicator = content.find('\n', start_block)
+                start_json = content.find('\n', start_block) + 1
+                end_json = content.rfind('```')
+                
+                # Extract the JSON content between the backticks
+                if start_json > 0 and end_json > start_json:
+                    content = content[start_json:end_json].strip()
+            except Exception as e:
+                print(f"Error extracting from code blocks: {e}")
             
-        # First check the config for the API key (that should be set by the batch_processor)
-        api_key = None
+            # Fallback: remove all ``` markers
+            content = content.replace('```json', '').replace('```', '').strip()
         
-        # Log all possible sources for the API key
-        if 'openai' in config and 'api_key' in config['openai'] and config['openai']['api_key']:
-            api_key = config['openai']['api_key']
-            print(f"Found API key in config object for reconciliation")
-        else:
-            print(f"API key not found in config object for reconciliation")
-            
-        # If not in config, try environment 
-        if not api_key:
-            api_key = os.environ.get('OPENAI_API_KEY')
-            if api_key:
-                print(f"Found API key in environment for reconciliation")
+        # Make sure the content starts with { and ends with }
+        content = content.strip()
+        if not content.startswith('{'):
+            first_brace = content.find('{')
+            if first_brace >= 0:
+                content = content[first_brace:]
             else:
-                print(f"API key not found in environment for reconciliation")
+                content = '{' + content
+                
+        if not content.endswith('}'):
+            last_brace = content.rfind('}')
+            if last_brace >= 0:
+                content = content[:last_brace+1]
+            else:
+                content = content + '}'
         
-        if not api_key:
-            raise ValueError("OpenAI API key not found for metadata reconciliation.")
+        import re
         
-        # Create OpenAI client with the API key
-        client = OpenAI(api_key=api_key)
+        # Use a much simpler approach - just try to parse the JSON directly
+        try:
+            # First, try parsing as is
+            return json.dumps(json.loads(content))
+        except json.JSONDecodeError:
+            # If that fails, make some simple fixes
+            try:
+                # Replace single quotes with double quotes (for field names)
+                content = re.sub(r"(?<![\\])(')([\w]+)(?:['])", r'"\2"', content)
+                
+                # Fix field names without quotes
+                content = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', content)
+                
+                # Fix trailing commas
+                content = content.replace(',}', '}')
+                content = content.replace(',\n}', '\n}')
+                
+                # Try parsing
+                try:
+                    parsed = json.loads(content)
+                    return json.dumps(parsed)
+                except json.JSONDecodeError:
+                    # One last attempt - rebuild the entire JSON structure
+                    fallback = {
+                        "magazine": "Unknown",
+                        "magazine_no": "Unknown",
+                        "author": "Unknown",
+                        "title": "Unknown",
+                        "language": "Unknown",
+                        "abstract_ita": "Impossibile analizzare la risposta JSON",
+                        "abstract_eng": "Could not parse JSON response",
+                        "theme": "Unknown",
+                        "format": "Unknown",
+                        "geographic_area": "Unknown",
+                        "keywords": "errore, analisi, fallita"
+                    }
+                    
+                    # Try to extract field values with regex
+                    fields = ["magazine", "magazine_no", "author", "title", "language", 
+                            "abstract_ita", "abstract_eng", "theme", "format", 
+                            "geographic_area", "keywords"]
+                    
+                    for field in fields:
+                        # Match patterns like "field": "value" with various quote combinations
+                        patterns = [
+                            r'"' + field + r'":\s*"([^"]*)"',  # "field": "value"
+                            r'"' + field + r'":\s*\'([^\']*)\'',  # "field": 'value'
+                            r'\'' + field + r'\':\s*"([^"]*)"',  # 'field': "value"
+                            r'\'' + field + r'\':\s*\'([^\']*)\'',  # 'field': 'value'
+                            r'"' + field + r'":\s*([^,"\'}\n]*)[\n,}]',  # "field": value
+                            r'\'' + field + r'\':\s*([^,"\'}\n]*)[\n,}]'  # 'field': value
+                        ]
+                        
+                        for pattern in patterns:
+                            match = re.search(pattern, content)
+                            if match:
+                                fallback[field] = match.group(1).strip()
+                                break
+                    
+                    return json.dumps(fallback)
+            except Exception as e:
+                print(f"Error trying to clean JSON: {e}")
+                # If all cleanup attempts fail, return empty JSON
+                return "{}"
+                
+    except Exception as e:
+        print(f"Error in extract_json_from_response: {e}")
+        return "{}"
+
+def reconcile_metadata(file_data: Dict[str, Any], config: Dict[str, Any] = None) -> Dict[str, str]:
+    """
+    Reconcile metadata extracted from folder structure and content using OpenAI API.
+    Takes extracted metadata and article content, returns corrected/validated metadata.
+    """
+    if config is None:
+        # Load default configuration
+        config = load_config()
+
+    try:
+        # Extract necessary data from file_data
+        file_path = file_data.get('full_path', '')
+        magazine = file_data.get('magazine', '')
+        magazine_no = file_data.get('magazine_no', '')
+        author = file_data.get('author', '')
+        title = file_data.get('title', '')
+        text_content = file_data.get('text_content', '')
+
+        if not text_content:
+            print(f"No text content found for {file_path}, skipping reconciliation")
+            return file_data
+
+        # Truncate text_content if it's too long (to fit within token limits)
+        text_content = text_content[:8000]
+
+        # Get API configuration
+        model = config.get('openai', {}).get('model', '')
+        if not model:
+            model = "gpt-3.5-turbo"  # Default model
+            
+        # Get the reconciliation prompt template
+        prompt_template = config.get('prompts', {}).get('reconcile_metadata', '')
         
-        print(f"Starting metadata reconciliation for file: {file_data.get('title', 'Unknown')}")
-        print(f"API key retrieved successfully")
+        # If no template provided, use a fallback template
+        if not prompt_template:
+            prompt_template = """
+            You are an expert data validator for ENI Magazine, tasked with reconciling metadata.
+
+            You have been provided with:
+            1. The file path: "{file_path}"
+            2. Preliminary metadata extracted from the folder structure:
+            - Magazine: "{magazine}"
+            - Magazine Number: "{magazine_no}"
+            - Author: "{author}"
+            - Title: "{title}"
+            
+            Article text: {text_content}
+            
+            Return a JSON with corrected fields: magazine, magazine_no, author, title, language, abstract_ita, abstract_eng, theme, format, geographic_area, keywords.
+            """
+            print("Using fallback reconciliation prompt template")
+        
+        # Before formatting, replace any unescaped curly braces in the example JSON
+        # This is needed to prevent format() from treating them as replacement fields
+        if "{" in prompt_template:
+            # First, temporarily replace our actual format variables with placeholders
+            safe_fields = {}
+            for field in ["file_path", "magazine", "magazine_no", "author", "title", "text_content"]:
+                field_pattern = "{" + field + "}"
+                safe_placeholder = f"__SAFE_FIELD_{field}__"
+                safe_fields[field] = safe_placeholder
+                prompt_template = prompt_template.replace(field_pattern, safe_placeholder)
+            
+            # Now escape all remaining curly braces (which are part of JSON examples)
+            prompt_template = prompt_template.replace("{", "{{").replace("}", "}}")
+            
+            # Finally, restore our format variables
+            for field, placeholder in safe_fields.items():
+                prompt_template = prompt_template.replace(placeholder, "{" + field + "}")
+        
+        # Format the prompt template
+        try:
+            prompt = prompt_template.format(
+                file_path=file_path,
+                magazine=magazine,
+                magazine_no=magazine_no,
+                author=author,
+                title=title,
+                text_content=text_content
+            )
+        except KeyError as e:
+            print(f"Formatting error with key: {e}")
+            print("This is likely due to unescaped curly braces in the prompt template.")
+            
+            # Use a fallback prompt template that doesn't have JSON examples
+            fallback_template = """
+            You are an expert data validator for ENI Magazine.
+            
+            Review this file: "{file_path}"
+            
+            Current metadata:
+            - Magazine: {magazine}
+            - Magazine Number: {magazine_no}
+            - Author: {author}
+            - Title: {title}
+            
+            Based on the following content, verify and correct the metadata:
+            
+            {text_content}
+            
+            Return ONLY a valid JSON object with these fields: magazine, magazine_no, author, title, 
+            language, abstract_ita, abstract_eng, theme, format, geographic_area, keywords.
+            """
+            
+            prompt = fallback_template.format(
+                file_path=file_path,
+                magazine=magazine,
+                magazine_no=magazine_no,
+                author=author,
+                title=title,
+                text_content=text_content[:4000]  # Limit content size in fallback
+            )
+            print("Using fallback prompt template without JSON examples")
+        
+        # Check if all metadata has been pre-filled or already exists
+        if all(k in file_data and file_data[k] for k in ['language', 'abstract_ita', 'abstract_eng', 'theme', 'format', 'geographic_area', 'keywords']):
+            # Skip calling AI if we already have all the data
+            print(f"All metadata fields already exist for {file_path}, skipping reconciliation.")
+            return file_data
+        
+        # Ensure we have a valid API key
+        api_key = setup_openai_api(config)
+        
+        # Create OpenAI client
+        client = create_openai_client(api_key)
         
         # Get OpenAI settings from config
-        model = config['openai'].get('model', "gpt-3.5-turbo")
         temperature = config['openai'].get('temperature', 0.1)
         max_tokens = config['openai'].get('max_tokens', 1000)
-        
-        print(f"Using model: {model}")
-        
-        # Get the prompt template
-        if 'prompts' in config and 'reconcile_metadata' in config['prompts']:
-            prompt_template = config['prompts']['reconcile_metadata']
-        else:
-            # Fallback prompt template if not in config
-            prompt_template = "Reconcile the following metadata from file: {file_path}\nMagazine: {magazine}\nMagazine Number: {magazine_no}\nAuthor: {author}\nTitle: {title}\n\nText content: {text_content}\n\nReturn a JSON with corrected fields."
-            print("Using fallback prompt template for reconciliation as it wasn't found in config")
-        
-        # Format the prompt template with the file data
-        try:
-            text_preview = file_data.get('text_content', '')[:100] + "..." if len(file_data.get('text_content', '')) > 100 else file_data.get('text_content', '')
-            
-            print(f"\n========== RECONCILIATION INPUTS ==========")
-            print(f"Magazine: '{file_data.get('magazine', '')}'")
-            print(f"Magazine Number: '{file_data.get('magazine_no', '')}'")
-            print(f"Author: '{file_data.get('author', '')}'")
-            print(f"Title: '{file_data.get('title', '')}'")
-            print(f"============================================\n")
-            
-            # Format the prompt template more carefully to avoid JSON parsing errors
-            try:
-                # Try using format() with named parameters
-                prompt = prompt_template.format(
-                    file_path=file_data.get('full_path', ''),
-                    magazine=file_data.get('magazine', ''),
-                    magazine_no=file_data.get('magazine_no', ''),
-                    author=file_data.get('author', ''),
-                    title=file_data.get('title', ''),
-                    text_content=file_data.get('text_content', '')
-                )
-            except KeyError as template_error:
-                # If format() with named parameters fails, try a more manual approach
-                print(f"Error with standard template formatting: {template_error}. Trying alternative approach.")
-                
-                # Replace placeholders manually
-                prompt = prompt_template
-                placeholder_map = {
-                    "{file_path}": file_data.get('full_path', ''),
-                    "{magazine}": file_data.get('magazine', ''),
-                    "{magazine_no}": file_data.get('magazine_no', ''),
-                    "{author}": file_data.get('author', ''),
-                    "{title}": file_data.get('title', ''),
-                    "{text_content}": file_data.get('text_content', '')
-                }
-                
-                for placeholder, value in placeholder_map.items():
-                    prompt = prompt.replace(placeholder, str(value))
-                
-                print("Used manual placeholder replacement.")
-            
-            # Print a short version of the formatted prompt for debugging
-            prompt_preview = prompt.replace(file_data.get('text_content', ''), '[TEXT CONTENT OMITTED FOR BREVITY]')
-            print(f"Using formatted prompt template (preview):\n{prompt_preview[:500]}...\n")
-            
-        except Exception as format_error:
-            print(f"Error formatting prompt template: {format_error}. Using fallback method.")
-            # Fallback to the direct construction method if template formatting fails
-            prompt = "Reconcile the following metadata from file:\n"
-            prompt += f"Magazine: {file_data.get('magazine', '')}\n"
-            prompt += f"Magazine Number: {file_data.get('magazine_no', '')}\n"
-            prompt += f"Author: {file_data.get('author', '')}\n"
-            prompt += f"Title: {file_data.get('title', '')}\n\n"
-            prompt += f"Text content: {file_data.get('text_content', '')}\n\n"
-            prompt += "Return a JSON with the following fields: magazine, magazine_no, author, title, abstract, theme, format, geographic_area, keywords."
         
         # Check if response_format is supported for this model
         response_format_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4-turbo-preview", "gpt-4o-mini"]
@@ -321,140 +443,101 @@ def reconcile_metadata(file_data: Dict[str, Any], config: Dict[str, Any] = None)
             
         print(f"Cleaned JSON content: {json_content[:100]}...")
         
+        # Extract data from response
         try:
-            # Parse the JSON
+            # Parse the JSON response
             data = json.loads(json_content)
             
-            print("Successfully parsed JSON response")
+            # Make a copy of the original file data to preserve any original fields
+            reconciled_data = file_data.copy()
             
-            # Debug the returned values for magazine and magazine_no
-            print(f"\n========== RECONCILIATION OUTPUTS ==========")
-            print(f"Magazine from AI: '{data.get('magazine', 'not found')}'")
-            print(f"Magazine No from AI: '{data.get('magazine_no', 'not found')}'")
-            print(f"Original Magazine: '{file_data.get('magazine', 'not found')}'")
-            print(f"Original Magazine No: '{file_data.get('magazine_no', 'not found')}'")
-            print(f"==============================================\n")
+            # Add original metadata fields if not already present
+            if 'original_magazine' not in reconciled_data:
+                reconciled_data['original_magazine'] = file_data.get('magazine', '')
+            if 'original_magazine_no' not in reconciled_data:
+                reconciled_data['original_magazine_no'] = file_data.get('magazine_no', '')
+            if 'original_author' not in reconciled_data:
+                reconciled_data['original_author'] = file_data.get('author', '')
+            if 'original_title' not in reconciled_data:
+                reconciled_data['original_title'] = file_data.get('title', '')
             
-            # Create a new dictionary with the validated/corrected data
-            reconciled_data = {
-                'abstract': data.get('abstract', file_data.get('abstract', 'Error extracting abstract')),
-                'theme': data.get('theme', file_data.get('theme', 'Unknown')),
-                'format': data.get('format', file_data.get('format', 'Unknown')),
-                'geographic_area': data.get('geographic_area', file_data.get('geographic_area', 'Unknown')),
-                'keywords': data.get('keywords', file_data.get('keywords', 'error, extraction, failed')),
-                'author': data.get('author', file_data.get('author', '')),
-                'title': data.get('title', file_data.get('title', '')),
-            }
+            # Update with reconciled fields
+            reconciled_data['magazine'] = data.get('magazine', file_data.get('magazine', ''))
+            reconciled_data['magazine_no'] = data.get('magazine_no', file_data.get('magazine_no', ''))
+            reconciled_data['author'] = data.get('author', file_data.get('author', ''))
+            reconciled_data['title'] = data.get('title', file_data.get('title', ''))
+            reconciled_data['language'] = data.get('language', file_data.get('language', 'Unknown'))
+            reconciled_data['abstract_ita'] = data.get('abstract_ita', file_data.get('abstract_ita', ''))
+            reconciled_data['abstract_eng'] = data.get('abstract_eng', file_data.get('abstract_eng', ''))
+            reconciled_data['theme'] = data.get('theme', file_data.get('theme', ''))
+            reconciled_data['format'] = data.get('format', file_data.get('format', ''))
+            reconciled_data['geographic_area'] = data.get('geographic_area', file_data.get('geographic_area', ''))
+            reconciled_data['keywords'] = data.get('keywords', file_data.get('keywords', ''))
             
-            # Validate magazine name - AI can correct if it doesn't match expected values
-            ai_magazine = data.get('magazine', '')
-            folder_magazine = file_data.get('magazine', '')
-            
-            if ai_magazine.lower() in ["orizzonti", "we"]:
-                # AI provided a valid magazine name, use it (could be a correction)
-                reconciled_data['magazine'] = ai_magazine
-                if ai_magazine != folder_magazine:
-                    print(f"AI corrected magazine from '{folder_magazine}' to '{ai_magazine}'")
+            # For backward compatibility - update 'abstract' field with the appropriate language or combine both
+            if reconciled_data.get('language', '') == 'ITA':
+                reconciled_data['abstract'] = reconciled_data.get('abstract_ita', reconciled_data.get('abstract_eng', ''))
             else:
-                # AI provided an invalid magazine name, use folder value
-                reconciled_data['magazine'] = folder_magazine
-                print(f"AI suggested invalid magazine name '{ai_magazine}', using folder value '{folder_magazine}'")
+                reconciled_data['abstract'] = reconciled_data.get('abstract_eng', reconciled_data.get('abstract_ita', ''))
             
-            # For magazine_no, we'll accept the AI version if it looks numeric
-            ai_magazine_no = data.get('magazine_no', '')
-            folder_magazine_no = file_data.get('magazine_no', '')
+            # Preserve non-AI-parsed fields
+            for key, value in file_data.items():
+                if key not in reconciled_data and key != 'text_content':
+                    reconciled_data[key] = value
             
-            # Convert to string if it's an integer/number
-            if isinstance(ai_magazine_no, (int, float)):
-                ai_magazine_no = str(ai_magazine_no)
-            
-            # Check if AI version is numeric or can be converted to a number
-            is_valid_number = False
-            
-            # Handle both string and numeric types
-            if isinstance(ai_magazine_no, str):
-                is_valid_number = ai_magazine_no.isdigit() or (ai_magazine_no.replace('.', '', 1).isdigit() if '.' in ai_magazine_no else False)
-            elif isinstance(ai_magazine_no, (int, float)):
-                is_valid_number = True
-                ai_magazine_no = str(ai_magazine_no)  # Convert to string for consistent handling
-                
-            if ai_magazine_no and is_valid_number:
-                reconciled_data['magazine_no'] = ai_magazine_no
-                if ai_magazine_no != folder_magazine_no:
-                    print(f"AI corrected magazine_no from '{folder_magazine_no}' to '{ai_magazine_no}'")
-            else:
-                # Use folder value if AI value doesn't look like a number
-                reconciled_data['magazine_no'] = folder_magazine_no
-                if ai_magazine_no and ai_magazine_no != folder_magazine_no:
-                    print(f"AI suggested invalid magazine_no '{ai_magazine_no}', using folder value '{folder_magazine_no}'")
-            
-            # Keep the original data for reference
-            reconciled_data['original_magazine'] = file_data.get('magazine', '')
-            reconciled_data['original_magazine_no'] = file_data.get('magazine_no', '')
-            reconciled_data['original_author'] = file_data.get('author', '')
-            reconciled_data['original_title'] = file_data.get('title', '')
-            
-            # Preserve other important fields from the original data
-            for key in ['full_path', 'text_content', 'preview_image']:
-                if key in file_data:
-                    reconciled_data[key] = file_data[key]
+            # Add the reconciled flag
+            reconciled_data['reconciled'] = True
             
             return reconciled_data
-            
+                
         except json.JSONDecodeError as json_error:
-            print(f"JSON parsing error in reconciliation: {json_error}")
+            print(f"Error parsing JSON in reconciliation: {json_error}")
             print(f"Problematic JSON: {json_content}")
             
-            # Return the original file data but mark that reconciliation failed
-            result = file_data.copy()
-            result['abstract'] = f"Error parsing JSON during reconciliation: {str(json_error)}"
+            # Return original data if JSON parsing fails
+            file_data['reconciled'] = False
+            file_data['reconciliation_error'] = f"JSON parsing error: {str(json_error)}"
+            return file_data
             
-            # Keep the original data for reference if not already present
-            if 'original_magazine' not in result:
-                result['original_magazine'] = file_data.get('magazine', '')
-            if 'original_magazine_no' not in result:
-                result['original_magazine_no'] = file_data.get('magazine_no', '')
-            if 'original_author' not in result:
-                result['original_author'] = file_data.get('author', '')
-            if 'original_title' not in result:
-                result['original_title'] = file_data.get('title', '')
-                
-            return result
-        
     except Exception as e:
-        print(f"Error reconciling metadata: {e}")
-        # Return error response - preserve original data 
-        return {
-            'abstract': file_data.get('abstract', f"Error during reconciliation: {str(e)}"),
-            'theme': file_data.get('theme', 'error'),
-            'format': file_data.get('format', 'error'),
-            'geographic_area': file_data.get('geographic_area', 'error'),
-            'keywords': file_data.get('keywords', 'error, reconciliation, failed'),
-            'magazine': file_data.get('magazine', ''),
-            'magazine_no': file_data.get('magazine_no', ''),
-            'author': file_data.get('author', ''),
-            'title': file_data.get('title', '')
-        }
+        print(f"Error in reconciliation process: {e}")
+        traceback.print_exc()
+        
+        # Return original data with error flag
+        file_data['reconciled'] = False
+        file_data['reconciliation_error'] = f"Reconciliation error: {str(e)}"
+        return file_data
 
 def batch_reconcile_metadata(file_data_list: list, config: Optional[Dict[str, Any]] = None) -> list:
     """
-    Process a batch of files for metadata reconciliation.
+    Batch reconcile metadata for multiple files.
     
     Args:
-        file_data_list: List of file data dictionaries from the first extraction phase
-        config: Optional configuration dictionary
+        file_data_list: List of file data dictionaries to reconcile
+        config: Configuration dictionary
         
     Returns:
-        List of dictionaries with validated and corrected metadata
+        List of file data dictionaries with reconciled metadata
     """
-    if not config:
-        config = load_config()
-    
     results = []
     
     for file_data in file_data_list:
-        # Skip files that don't have text content
+        # Skip if already reconciled
+        if file_data.get('reconciled', False):
+            results.append(file_data)
+            continue
+            
+        # Skip if we don't have text content
         if 'text_content' not in file_data or not file_data['text_content']:
+            file_data['reconciled'] = False
+            file_data['reconciliation_error'] = "No text content available for reconciliation"
+            results.append(file_data)
+            continue
+            
+        # Check if we already have all the required fields filled in
+        if all(k in file_data and file_data[k] for k in ['language', 'abstract_ita', 'abstract_eng', 'theme', 'format', 'geographic_area', 'keywords']):
+            # Already has all metadata, just mark as reconciled
+            file_data['reconciled'] = True
             results.append(file_data)
             continue
         

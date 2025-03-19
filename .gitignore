@@ -74,3 +74,6 @@ Thumbs.db
 *.docx
 *.zip
 /data
+/__pycache__
+/__pycache__
+temp_state.json

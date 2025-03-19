@@ -131,7 +131,9 @@ def extract_json_from_response(content):
                     "magazine_no": "",
                     "author": "",
                     "title": "",
-                    "abstract": f"Could not parse JSON response",
+                    "language": "",
+                    "abstract_ita": "Could not parse JSON response",
+                    "abstract_eng": "Could not parse JSON response",
                     "theme": "",
                     "format": "",
                     "geographic_area": "",
@@ -139,8 +141,9 @@ def extract_json_from_response(content):
                 }
                 
                 # Try to extract field values with regex
-                fields = ["magazine", "magazine_no", "author", "title", "abstract", 
-                          "theme", "format", "geographic_area", "keywords"]
+                fields = ["magazine", "magazine_no", "author", "title", "language", 
+                          "abstract_ita", "abstract_eng", "theme", "format", 
+                          "geographic_area", "keywords"]
                 
                 for field in fields:
                     # Match patterns like "field": "value" with various quote combinations
@@ -168,7 +171,9 @@ def extract_json_from_response(content):
             "magazine_no": "",
             "author": "",
             "title": "",
-            "abstract": f"Error: {str(e)}",
+            "language": "",
+            "abstract_ita": f"Error: {str(e)}",
+            "abstract_eng": f"Error: {str(e)}",
             "theme": "",
             "format": "",
             "geographic_area": "",
@@ -325,17 +330,28 @@ def extract_fields_from_text(file_path, text_content, config=None):
             print("Successfully parsed JSON response")
             
             # Ensure all required fields are present
-            required_fields = ['magazine', 'magazine_no', 'author', 'title', 'abstract', 'theme', 'format', 'geographic_area', 'keywords']
+            required_fields = ['magazine', 'magazine_no', 'author', 'title', 'language', 
+                              'abstract_ita', 'abstract_eng', 'theme', 'format', 
+                              'geographic_area', 'keywords']
             for field in required_fields:
                 if field not in data:
                     print(f"Missing field '{field}' in response, creating default")
-                    if field == 'abstract':
+                    if field == 'abstract_ita':
+                        data[field] = "Nessun abstract disponibile"
+                    elif field == 'abstract_eng':
                         data[field] = "No abstract available"
+                    elif field == 'language':
+                        data[field] = "Unknown"
                     elif field == 'keywords':
-                        data[field] = "unknown, missing, unspecified"
+                        data[field] = "sconosciuto, mancante, non specificato"
                     else:
                         data[field] = "Unknown"
             
+            # For backward compatibility - add a merged abstract field
+            data['abstract'] = data.get('abstract_ita', '')
+            if not data['abstract']:
+                data['abstract'] = data.get('abstract_eng', 'No abstract available')
+                
             # Add the text content and file path to the data
             data['text_content'] = text_content
             data['full_path'] = file_path
@@ -352,11 +368,14 @@ def extract_fields_from_text(file_path, text_content, config=None):
                 'magazine_no': "Error",
                 'author': "Error",
                 'title': os.path.basename(file_path),
+                'language': "Error",
+                'abstract_ita': f"Errore durante l'analisi JSON: {str(json_error)}",
+                'abstract_eng': f"Error parsing JSON during extraction: {str(json_error)}",
                 'abstract': f"Error parsing JSON during extraction: {str(json_error)}",
                 'theme': "error",
                 'format': "error",
                 'geographic_area': "error",
-                'keywords': "error, extraction, failed",
+                'keywords': "errore, estrazione, fallita",
                 'text_content': text_content,
                 'full_path': file_path
             }
@@ -372,11 +391,14 @@ def extract_fields_from_text(file_path, text_content, config=None):
             'magazine_no': "Error",
             'author': "Error",
             'title': os.path.basename(file_path) if file_path else "Unknown",
+            'language': "Error",
+            'abstract_ita': f"Errore durante l'estrazione: {str(e)}",
+            'abstract_eng': f"Error during extraction: {str(e)}",
             'abstract': f"Error during extraction: {str(e)}",
             'theme': "error",
             'format': "error",
             'geographic_area': "error",
-            'keywords': "error, extraction, failed",
+            'keywords': "errore, estrazione, fallita",
             'text_content': text_content,
             'full_path': file_path
         }
@@ -400,7 +422,7 @@ def batch_extract_fields(file_data_list: List[Dict[str, Any]],
     
     for file_data in file_data_list:
         # Skip files that already have all extracted fields
-        if all(k in file_data for k in ['abstract', 'theme', 'format', 'geographic_area', 'keywords']):
+        if all(k in file_data for k in ['language', 'abstract_ita', 'abstract_eng', 'theme', 'format', 'geographic_area', 'keywords']):
             results.append(file_data)
             continue
         

@@ -135,6 +135,9 @@ def update_dataframe(df: pd.DataFrame, file_data: Dict[str, Any]) -> pd.DataFram
     row = {
         'title': str(file_data.get('title', '')),
         'abstract': str(file_data.get('abstract', '')),
+        'abstract_ita': str(file_data.get('abstract_ita', '')),
+        'abstract_eng': str(file_data.get('abstract_eng', '')),
+        'language': str(file_data.get('language', '')),
         'preview_image_path': preview_image_path,  # Store path instead of base64
         'folder_images': folder_images_str,
         'magazine': str(file_data.get('magazine', '')),
@@ -223,8 +226,8 @@ def read_csv(file_path: str) -> Optional[pd.DataFrame]:
             print(f"Warning: CSV file at {file_path} is empty or has no valid columns.")
             # Return an empty DataFrame with the expected columns
             return pd.DataFrame(columns=[
-                'title', 'abstract', 'preview_image_path', 'magazine', 'magazine_no',
-                'theme', 'format', 'author', 'geographic_area', 'keywords',
+                'title', 'abstract', 'abstract_ita', 'abstract_eng', 'language', 'preview_image_path', 
+                'magazine', 'magazine_no', 'theme', 'format', 'author', 'geographic_area', 'keywords',
                 'original_magazine', 'original_magazine_no', 'original_author', 'original_title',
                 'full_path', 'folder_images'
             ])
