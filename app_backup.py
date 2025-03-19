@@ -256,7 +256,7 @@ def process_file(file_data: Dict[str, Any], df: pd.DataFrame, config: Dict[str, 
             file_data_copy.update(reconciled_data)
         
         # Update the DataFrame
-        df = update_dataframe(file_data_copy, df)
+        update_dataframe(file_data_copy, df)
         
         return file_data_copy, df
     
@@ -277,55 +277,6 @@ def ensure_required_fields(file_data: Dict[str, Any]) -> None:
             else:
                 file_data[field] = "Unknown"
             print(f"Added missing field '{field}' with default value")
-
-def update_dataframe(file_data: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Update DataFrame with file data.
-    
-    Args:
-        file_data: File data dictionary
-        df: DataFrame to update
-        
-    Returns:
-        Updated DataFrame
-    """
-    # Check if the file is already in the DataFrame
-    if 'full_path' not in file_data:
-        return df
-        
-    file_path = file_data['full_path']
-    file_row = df[df['full_path'] == file_path]
-    
-    if file_row.empty:
-        # File not in DataFrame, add a new row
-        df_row = pd.DataFrame([{
-            'filename': file_data.get('filename', os.path.basename(file_path)),
-            'full_path': file_path,
-            'title': file_data.get('title', ''),
-            'author': file_data.get('author', ''),
-            'abstract': file_data.get('abstract', ''),
-            'theme': file_data.get('theme', ''),
-            'format': file_data.get('format', ''),
-            'geographic_area': file_data.get('geographic_area', ''),
-            'keywords': file_data.get('keywords', ''),
-            'magazine': file_data.get('magazine', ''),
-            'magazine_no': file_data.get('magazine_no', ''),
-            'language': file_data.get('language', ''),
-            'Last Updated': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'Phase': file_data.get('phase', 1)
-        }])
-        df = pd.concat([df, df_row], ignore_index=True)
-    else:
-        # Update the existing row
-        for field in ['title', 'author', 'abstract', 'theme', 'format', 'geographic_area', 
-                      'keywords', 'magazine', 'magazine_no', 'language']:
-            if field in file_data:
-                df.loc[df['full_path'] == file_path, field] = file_data[field]
-                
-        # Update timestamp
-        df.loc[df['full_path'] == file_path, 'Last Updated'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    return df
 
 def batch_processor(params=None):
     """Background worker thread to process files from the queue"""
@@ -1636,7 +1587,7 @@ with tab_analysis:
             with col1:
                 fig = plot_format_distribution(df)
                 if fig is not None:
-                        st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("Format information not available.")
             
@@ -2127,6 +2078,55 @@ with tab_analysis:
                 # Render the network
                 with st.spinner("Generating network visualization..."):
                     render_keyword_network(network_data)
+
+def update_dataframe(file_data: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Update DataFrame with file data.
+    
+    Args:
+        file_data: File data dictionary
+        df: DataFrame to update
+        
+    Returns:
+        Updated DataFrame
+    """
+    # Check if the file is already in the DataFrame
+    if 'full_path' not in file_data:
+        return df
+        
+    file_path = file_data['full_path']
+    file_row = df[df['full_path'] == file_path]
+    
+    if file_row.empty:
+        # File not in DataFrame, add a new row
+        df_row = pd.DataFrame([{
+            'filename': file_data.get('filename', os.path.basename(file_path)),
+            'full_path': file_path,
+            'title': file_data.get('title', ''),
+            'author': file_data.get('author', ''),
+            'abstract': file_data.get('abstract', ''),
+            'theme': file_data.get('theme', ''),
+            'format': file_data.get('format', ''),
+            'geographic_area': file_data.get('geographic_area', ''),
+            'keywords': file_data.get('keywords', ''),
+            'magazine': file_data.get('magazine', ''),
+            'magazine_no': file_data.get('magazine_no', ''),
+            'language': file_data.get('language', ''),
+            'Last Updated': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'Phase': file_data.get('phase', 1)
+        }])
+        df = pd.concat([df, df_row], ignore_index=True)
+    else:
+        # Update the existing row
+        for field in ['title', 'author', 'abstract', 'theme', 'format', 'geographic_area', 
+                      'keywords', 'magazine', 'magazine_no', 'language']:
+            if field in file_data:
+                df.loc[df['full_path'] == file_path, field] = file_data[field]
+                
+        # Update timestamp
+        df.loc[df['full_path'] == file_path, 'Last Updated'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    return df
 
 def create_lightweight_file_data(file_data_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """

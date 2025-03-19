@@ -1,6 +1,5 @@
 import os
 import io
-import base64
 from typing import Dict, Any, Tuple, Optional, List
 from docx import Document
 from PIL import Image
@@ -15,7 +14,7 @@ def extract_docx_content(file_path: str) -> Tuple[str, Optional[str]]:
     Returns:
         Tuple containing:
         - text: The extracted text content
-        - preview_image: Base64 encoded string of the first image (if any), or None
+        - preview_image_path: Path to the saved preview image (if any), or None
     """
     try:
         doc = Document(file_path)
@@ -29,7 +28,15 @@ def extract_docx_content(file_path: str) -> Tuple[str, Optional[str]]:
         text_content = "\n".join(paragraphs)
         
         # Extract first image (if any)
-        preview_image = None
+        preview_image_path = None
+        
+        # Create a directory for images next to the document
+        doc_dir = os.path.dirname(file_path)
+        images_dir = os.path.join(doc_dir, "__images__")
+        os.makedirs(images_dir, exist_ok=True)
+        
+        # Get document name without extension for the image filename
+        doc_name = os.path.splitext(os.path.basename(file_path))[0]
         
         # Check for images in the document
         for rel in doc.part.rels.values():
@@ -38,53 +45,51 @@ def extract_docx_content(file_path: str) -> Tuple[str, Optional[str]]:
                     # Get image data
                     image_data = rel.target_part.blob
                     
-                    # Convert to base64 for storage/display
-                    image_base64 = base64.b64encode(image_data).decode('utf-8')
-                    
                     # Get image type from rel.target_ref (e.g., "image/jpeg")
                     image_type = rel.target_ref.split('/')[-1]  # Extract extension
                     
-                    # Create base64 string with image type
-                    preview_image = f"data:image/{image_type};base64,{image_base64}"
+                    # Create a filename for the image
+                    image_filename = f"{doc_name}_preview.{image_type}"
+                    image_path = os.path.join(images_dir, image_filename)
+                    
+                    # Save the image to disk
+                    with open(image_path, 'wb') as img_file:
+                        img_file.write(image_data)
+                    
+                    preview_image_path = image_path
                     
                     # Only use the first image as preview
                     break
                 except Exception as e:
                     print(f"Error extracting image: {e}")
         
-        return text_content, preview_image
+        return text_content, preview_image_path
     
     except Exception as e:
         print(f"Error parsing DOCX file {file_path}: {e}")
         return "", None
         
-def save_preview_image(image_base64: str, output_dir: str, file_name: str) -> str:
+def save_preview_image(image_data: bytes, output_dir: str, file_name: str) -> str:
     """
-    Save a base64 encoded image to the output directory.
+    Save image data to the output directory.
     
     Args:
-        image_base64: Base64 encoded image string
+        image_data: Binary image data
         output_dir: Directory to save the image
         file_name: Base name for the image file
         
     Returns:
         Path to the saved image
     """
-    if not image_base64:
+    if not image_data:
         return ""
     
     try:
         # Make sure output directory exists
         os.makedirs(output_dir, exist_ok=True)
         
-        # Extract the image data (remove the data:image/xxx;base64, prefix)
-        image_data = image_base64.split(',')[1]
-        
-        # Decode base64 data
-        image_bytes = base64.b64decode(image_data)
-        
         # Open image using PIL
-        image = Image.open(io.BytesIO(image_bytes))
+        image = Image.open(io.BytesIO(image_data))
         
         # Save the image
         output_path = os.path.join(output_dir, f"{file_name}.png")

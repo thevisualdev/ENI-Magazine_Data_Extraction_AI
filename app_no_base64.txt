@@ -6,7 +6,6 @@ import yaml
 import tempfile
 from PIL import Image
 import io
-import base64
 import threading
 import queue
 from typing import List, Dict, Any, Optional, Tuple
@@ -49,7 +48,7 @@ from file_manager import load_config, process_zip_file, process_directory
 from docx_parser import extract_docx_content, save_preview_image, find_folder_images
 from ai_extractor import extract_fields_from_text, batch_extract_fields, setup_openai_api
 from ai_reconciler import reconcile_metadata, batch_reconcile_metadata
-from csv_manager import create_dataframe, save_to_csv, read_csv
+from csv_manager import create_dataframe, save_to_csv, update_dataframe, read_csv
 
 # Set page config
 st.set_page_config(
@@ -141,7 +140,6 @@ processed_count = 0  # Thread-safe counter for processed files
 progress_percentage = 0.0  # Thread-safe variable for progress
 
 def display_image(image_source):
-    """Display an image from file path or base64 string in Streamlit."""
     if not image_source:
         return
         
@@ -159,13 +157,10 @@ def display_image(image_source):
                 st.image(image, width=200)
                 return
         
-        # Fallback to base64 handling for legacy data
         if isinstance(image_source, str) and image_source.startswith('data:'):
             # Extract the image data
             image_data = image_source.split(',')[1]
             
-            # Decode base64 data
-            image_bytes = base64.b64decode(image_data)
             
             # Open image using PIL
             image = Image.open(io.BytesIO(image_bytes))
@@ -201,30 +196,36 @@ def process_file(file_data: Dict[str, Any], df: pd.DataFrame, config: Dict[str, 
         
         # Phase 1: Extract text and preview image from the DOCX file (if not already done)
         if 'text_content' not in file_data_copy or not file_data_copy['text_content']:
-            text_content, preview_image_path = extract_docx_content(file_data_copy['full_path'])
+            text_content, preview_image = extract_docx_content(file_data_copy['full_path'])
             
             file_data_copy['text_content'] = text_content
-            
-            # Store the preview image path
-            if preview_image_path:
-                file_data_copy['preview_image_path'] = preview_image_path
+            file_data_copy['preview_image'] = preview_image  # Keep for UI display only
             
             # Find images in the document folder and store their paths
             folder_images = find_folder_images(file_data_copy['full_path'])
             file_data_copy['folder_images'] = folder_images
             
-            # Set preview_image_path if not already set
-            if not preview_image_path and folder_images:
+            # Set preview_image_path based on available images
+            if folder_images:
                 file_data_copy['preview_image_path'] = folder_images[0]
-            elif not preview_image_path:
+            else:
                 file_data_copy['preview_image_path'] = "[embedded image in document]"
+            
+            # If no preview image from the document but folder images exist, use the first folder image for display
+            if (not preview_image or preview_image == "") and folder_images:
+                try:
+                    with open(folder_images[0], 'rb') as img_file:
+                        img_data = img_file.read()
+                        img_ext = os.path.splitext(folder_images[0])[1].lower().replace('.', '')
+                        if img_ext == 'jpg':
+                            img_ext = 'jpeg'  # Adjust extension for MIME type
+                except Exception as e:
+                    print(f"Error using folder image as preview: {e}")
         
-        # Check if we need to run Phase 1 extraction
+        # Phase 1: Extract fields using OpenAI API (if not already done or if explicitly re-running Phase 1)
         phase1_needed = not all(k in file_data_copy for k in ['abstract', 'theme', 'format', 'geographic_area', 'keywords'])
         if phase1_needed or (not reconcile):
-            # Extract fields using AI
             # If re-running Phase 1 after Phase 2, preserve original metadata fields
-            original_fields = {}
             if all(k in file_data_copy for k in ['original_magazine', 'original_magazine_no', 'original_author', 'original_title']):
                 # Save the original values
                 original_fields = {
@@ -233,107 +234,126 @@ def process_file(file_data: Dict[str, Any], df: pd.DataFrame, config: Dict[str, 
                     'original_author': file_data_copy.get('original_author'),
                     'original_title': file_data_copy.get('original_title')
                 }
-            
-            # Get the file path
-            file_path = file_data_copy.get('full_path', '')
-            
-            # Extract new fields
-            extracted_fields = extract_fields_from_text(file_path, file_data_copy['text_content'], config)
-            
-            # Update file data with extracted fields
-            file_data_copy.update(extracted_fields)
-            
-            # Ensure all required fields are present
-            ensure_required_fields(file_data_copy)
+                
+                # Get the file path
+                file_path = file_data_copy.get('full_path', '')
+                
+                # Extract new fields
+                extracted_fields = extract_fields_from_text(file_path, file_data_copy['text_content'], config)
+                
+                # Update file data with extracted fields
+                file_data_copy.update(extracted_fields)
+                
+                # Ensure all required fields are present to enable Phase 2
+                required_fields = ['abstract', 'theme', 'format', 'geographic_area', 'keywords']
+                for field in required_fields:
+                    if field not in file_data_copy or not file_data_copy[field]:
+                        if field == 'abstract':
+                            file_data_copy[field] = "No abstract available"
+                        elif field == 'keywords':
+                            file_data_copy[field] = "unknown, missing, unspecified"
+                        else:
+                            file_data_copy[field] = "Unknown"
+                        print(f"Added missing field '{field}' with default value")
+                
+                # Ensure all required fields are present to enable Phase 2
+                required_fields = ['abstract', 'theme', 'format', 'geographic_area', 'keywords']
+                for field in required_fields:
+                    if field not in file_data_copy or not file_data_copy[field]:
+                        if field == 'abstract':
+                            file_data_copy[field] = "No abstract available"
+                        elif field == 'keywords':
+                            file_data_copy[field] = "unknown, missing, unspecified"
+                        else:
+                            file_data_copy[field] = "Unknown"
+                        print(f"Added missing field '{field}' with default value")
+                
+                # Ensure all required fields are present to enable Phase 2
+                required_fields = ['abstract', 'theme', 'format', 'geographic_area', 'keywords']
+                for field in required_fields:
+                    if field not in file_data_copy or not file_data_copy[field]:
+                        if field == 'abstract':
+                            file_data_copy[field] = "No abstract available"
+                        elif field == 'keywords':
+                            file_data_copy[field] = "unknown, missing, unspecified"
+                        else:
+                            file_data_copy[field] = "Unknown"
+                        print(f"Added missing field '{field}' with default value")
+                
+                # Restore original fields
+                file_data_copy.update(original_fields)
+            else:
+                # Normal Phase 1 extraction
+                # Get the file path
+                file_path = file_data_copy.get('full_path', '')
+                
+                # Extract new fields
+                extracted_fields = extract_fields_from_text(file_path, file_data_copy['text_content'], config)
+                
+                # Update file data with extracted fields
+                file_data_copy.update(extracted_fields)
         
-        # Phase 2: Reconcile metadata (if requested)
+        # Phase 2: Reconcile metadata if requested
         if reconcile:
-            # Ensure we have the required fields before reconciliation
-            ensure_required_fields(file_data_copy)
+            # Ensure we have Phase 1 data before attempting Phase 2
+            if not all(k in file_data_copy for k in ['abstract', 'theme', 'format', 'geographic_area', 'keywords']):
+                st.warning("Cannot reconcile metadata without Phase 1 extraction. Running Phase 1 first.")
+                # Extract fields
+                extracted_fields = extract_fields_from_text(file_data_copy['text_content'], config)
+                file_data_copy.update(extracted_fields)
+                
+                # Ensure all required fields are present after Phase 2 extraction
+                required_fields = ['abstract', 'theme', 'format', 'geographic_area', 'keywords']
+                for field in required_fields:
+                    if field not in file_data_copy or not file_data_copy[field]:
+                        if field == 'abstract':
+                            file_data_copy[field] = "No abstract available"
+                        elif field == 'keywords':
+                            file_data_copy[field] = "unknown, missing, unspecified"
+                        else:
+                            file_data_copy[field] = "Unknown"
+                        print(f"Added missing field '{field}' with default value")
             
-            # Run reconciliation
+            # Store original values before reconciliation
+            if 'original_magazine' not in file_data_copy:
+                file_data_copy['original_magazine'] = file_data_copy.get('magazine', '')
+            if 'original_magazine_no' not in file_data_copy:
+                file_data_copy['original_magazine_no'] = file_data_copy.get('magazine_no', '')
+            if 'original_author' not in file_data_copy:
+                file_data_copy['original_author'] = file_data_copy.get('author', '')
+            if 'original_title' not in file_data_copy:
+                file_data_copy['original_title'] = file_data_copy.get('title', '')
+            
+            # Reconcile metadata with AI
             reconciled_data = reconcile_metadata(file_data_copy, config)
+            
+            # Update file data with reconciled fields
             file_data_copy.update(reconciled_data)
         
         # Update the DataFrame
-        df = update_dataframe(file_data_copy, df)
+        df = update_dataframe(df, file_data_copy)
+        
+        # Save the updated DataFrame to CSV
+        save_to_csv(df, CSV_PATH)
+        
+        # Reload the CSV to ensure we have the latest data
+        df_refreshed = read_csv(CSV_PATH)
+        if df_refreshed is not None:
+            df = df_refreshed
         
         return file_data_copy, df
-    
     except Exception as e:
-        print(f"Error processing file: {e}")
+        st.error(f"Error processing file: {e}")
         # Return the original file_data and DataFrame if there's an error
         return file_data, df
-
-def ensure_required_fields(file_data: Dict[str, Any]) -> None:
-    """Ensure all required fields are present with default values if missing."""
-    required_fields = ['abstract', 'theme', 'format', 'geographic_area', 'keywords']
-    for field in required_fields:
-        if field not in file_data or not file_data[field]:
-            if field == 'abstract':
-                file_data[field] = "No abstract available"
-            elif field == 'keywords':
-                file_data[field] = "unknown, missing, unspecified"
-            else:
-                file_data[field] = "Unknown"
-            print(f"Added missing field '{field}' with default value")
-
-def update_dataframe(file_data: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Update DataFrame with file data.
-    
-    Args:
-        file_data: File data dictionary
-        df: DataFrame to update
-        
-    Returns:
-        Updated DataFrame
-    """
-    # Check if the file is already in the DataFrame
-    if 'full_path' not in file_data:
-        return df
-        
-    file_path = file_data['full_path']
-    file_row = df[df['full_path'] == file_path]
-    
-    if file_row.empty:
-        # File not in DataFrame, add a new row
-        df_row = pd.DataFrame([{
-            'filename': file_data.get('filename', os.path.basename(file_path)),
-            'full_path': file_path,
-            'title': file_data.get('title', ''),
-            'author': file_data.get('author', ''),
-            'abstract': file_data.get('abstract', ''),
-            'theme': file_data.get('theme', ''),
-            'format': file_data.get('format', ''),
-            'geographic_area': file_data.get('geographic_area', ''),
-            'keywords': file_data.get('keywords', ''),
-            'magazine': file_data.get('magazine', ''),
-            'magazine_no': file_data.get('magazine_no', ''),
-            'language': file_data.get('language', ''),
-            'Last Updated': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'Phase': file_data.get('phase', 1)
-        }])
-        df = pd.concat([df, df_row], ignore_index=True)
-    else:
-        # Update the existing row
-        for field in ['title', 'author', 'abstract', 'theme', 'format', 'geographic_area', 
-                      'keywords', 'magazine', 'magazine_no', 'language']:
-            if field in file_data:
-                df.loc[df['full_path'] == file_path, field] = file_data[field]
-                
-        # Update timestamp
-        df.loc[df['full_path'] == file_path, 'Last Updated'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    return df
 
 def batch_processor(params=None):
     """Background worker thread to process files from the queue"""
     try:
         # Initialize key variables locally
         print(f"Starting batch processor")
-        progress_percentage = 0.0
-        
+    progress_percentage = 0.0
+    
         # Extract parameters safely
         if params is None:
             params = {}
@@ -349,14 +369,14 @@ def batch_processor(params=None):
             if 'OPENAI_API_KEY' in os.environ and os.environ['OPENAI_API_KEY']:
                 api_key = os.environ['OPENAI_API_KEY']
                 print(f"API key from environment: Found")
-            else:
+    else:
                 print(f"API key from environment: Not found")
         
-        if not api_key:
+    if not api_key:
             print(f"WARNING: No API key found for batch processing!")
             print(f"CRITICAL ERROR: No API key available. Batch processing cannot continue.")
-            return
-        
+        return
+    
         # Load the configuration and set API key
         config = load_config()
         config['openai']['api_key'] = api_key
@@ -367,7 +387,7 @@ def batch_processor(params=None):
             if os.path.exists(csv_path):
                 df = pd.read_csv(csv_path)
                 if df.empty:
-                    df = create_dataframe(file_data_list)
+            df = create_dataframe(file_data_list)
             else:
                 df = create_dataframe(file_data_list)
                 os.makedirs(os.path.dirname(csv_path), exist_ok=True)
@@ -377,9 +397,9 @@ def batch_processor(params=None):
             df = create_dataframe(file_data_list)
         
         # Process files from the queue
-        success_count = 0
-        error_count = 0
-        
+    success_count = 0
+    error_count = 0
+    
         # Create a dictionary to map file IDs to their index in file_data_list
         file_id_map = {}
         for i, fd in enumerate(file_data_list):
@@ -436,10 +456,10 @@ def batch_processor(params=None):
                 if success:
                     success_count += 1
                 else:
-                    error_count += 1
+                error_count += 1
             
                 # Mark the task as done
-                processing_queue.task_done()
+            processing_queue.task_done()
             
                 # Update progress
                 processed_count = success_count + error_count
@@ -457,12 +477,12 @@ def batch_processor(params=None):
                         asyncio.set_event_loop(next_loop)
                         next_loop.run_until_complete(update_session_state(processed_count, progress_percentage, file_data_list))
                         next_loop.close()
-                    except Exception as e:
+        except Exception as e:
                         print(f"Error saving progress: {str(e)}")
             
             except Exception as e:
                 print(f"Error processing file in batch: {str(e)}")
-                error_count += 1
+            error_count += 1
                 processing_queue.task_done()
         
         # Final update to indicate completion
@@ -470,17 +490,21 @@ def batch_processor(params=None):
             # Save DataFrame to CSV one final time
             save_to_csv(df, csv_path)
             
-            # Update session state one final time
-            next_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(next_loop)
-            next_loop.run_until_complete(update_session_state(processed_count, progress_percentage, file_data_list))
-            next_loop.close()
+            # Set final session state
+            final_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(final_loop)
+            final_loop.run_until_complete(update_session_state(
+                success_count + error_count,
+                100.0 if total_queue_size > 0 and success_count + error_count >= total_queue_size else progress_percentage,
+                file_data_list,
+                is_done=True
+            ))
+            final_loop.close()
             
-            print(f"Batch processing completed: {success_count} succeeded, {error_count} failed")
-            
+            print(f"Batch processing complete. Processed {success_count + error_count} files ({success_count} success, {error_count} errors)")
         except Exception as e:
-            print(f"Error finalizing batch process: {str(e)}")
-            
+            print(f"Error in final update: {str(e)}")
+    
     except Exception as e:
         print(f"Critical error in batch processor: {str(e)}")
         traceback.print_exc()
@@ -494,14 +518,11 @@ async def update_session_state(processed_count, progress_percentage, file_data_l
         rerun_id = int(time.time() * 1000)
         query_params = {"_update": str(rerun_id)}
         
-        # Create lightweight version of file_data_list to reduce session state size
-        lightweight_data = create_lightweight_file_data(file_data_list)
-        
         # Serialize the data we want to update
         state_updates = {
             "processed_count": processed_count,
             "progress_percentage": progress_percentage,
-            "file_data_list": lightweight_data
+            "file_data_list": file_data_list
         }
         
         if is_done:
@@ -905,30 +926,30 @@ with tab_extraction:
                 """Function to handle starting batch processing"""
                 global processing_thread, stop_processing
                 
-                # Reset the stop flag
-                stop_processing.clear()
-                
-                # Clear any existing queue
-                while not processing_queue.empty():
-                    try:
-                        processing_queue.get_nowait()
-                        processing_queue.task_done()
-                    except:
-                        pass
-                
+                    # Reset the stop flag
+                    stop_processing.clear()
+                    
+                    # Clear any existing queue
+                    while not processing_queue.empty():
+                        try:
+                            processing_queue.get_nowait()
+                            processing_queue.task_done()
+                        except:
+                            pass
+                    
                 # Ensure the OpenAI API key is set in the environment
                 # This ensures the background thread will have access to it
                 if 'api_key' in st.session_state and st.session_state.api_key:
                     os.environ['OPENAI_API_KEY'] = st.session_state.api_key
                     print(f"API key set in environment before starting batch processor")
                 
-                # Start batch processing
-                st.session_state.is_processing = True
-                st.session_state.processed_count = 0
-                st.session_state.progress_percentage = 0.0
-                
-                selected_phase = st.session_state.processing_phase
-                
+                    # Start batch processing
+                    st.session_state.is_processing = True
+                    st.session_state.processed_count = 0
+                    st.session_state.progress_percentage = 0.0
+                    
+                    selected_phase = st.session_state.processing_phase
+                    
                 # Create deep copies of the file data list to prevent session state threading issues
                 file_data_list = []
                 if hasattr(st.session_state, 'file_data_list') and st.session_state.file_data_list:
@@ -941,41 +962,41 @@ with tab_extraction:
                     st.session_state.is_processing = False
                     return
                 
-                # Count files that need processing
-                phase1_count = 0
-                phase2_count = 0
-                
-                # Put all unprocessed files in the queue based on selected phase
+                    # Count files that need processing
+                    phase1_count = 0
+                    phase2_count = 0
+                    
+                    # Put all unprocessed files in the queue based on selected phase
                 for file_data in file_data_list:
-                    if selected_phase == 0 or selected_phase == 1:  # Phase 1 or Both
-                        if not all(k in file_data for k in ['abstract', 'theme', 'format', 'geographic_area', 'keywords']):
+                        if selected_phase == 0 or selected_phase == 1:  # Phase 1 or Both
+                            if not all(k in file_data for k in ['abstract', 'theme', 'format', 'geographic_area', 'keywords']):
                             # Create a deep copy to avoid thread issues
                             processing_queue.put((dict(file_data), 1))  # Phase 1
-                            phase1_count += 1
+                                phase1_count += 1
                         
-                    if selected_phase == 0 or selected_phase == 2:  # Phase 2 or Both
-                        # For Phase 2, we need files that have completed Phase 1
-                        if all(k in file_data for k in ['abstract', 'theme', 'format', 'geographic_area', 'keywords']):
+                        if selected_phase == 0 or selected_phase == 2:  # Phase 2 or Both
+                            # For Phase 2, we need files that have completed Phase 1
+                            if all(k in file_data for k in ['abstract', 'theme', 'format', 'geographic_area', 'keywords']):
                             # Create a deep copy to avoid thread issues
                             processing_queue.put((dict(file_data), 2))  # Phase 2
-                            phase2_count += 1
-                
-                total_queue_size = phase1_count + phase2_count
-                st.session_state.total_queue_size = total_queue_size
-                
-                if total_queue_size == 0:
-                    st.warning("No files need processing for the selected phase. Try selecting a different phase.")
-                    st.session_state.is_processing = False
+                                phase2_count += 1
+                    
+                    total_queue_size = phase1_count + phase2_count
+                    st.session_state.total_queue_size = total_queue_size
+                    
+                    if total_queue_size == 0:
+                        st.warning("No files need processing for the selected phase. Try selecting a different phase.")
+                        st.session_state.is_processing = False
                     return
                 
-                # Show what's being processed
-                if selected_phase == 0:
-                    st.info(f"Processing {phase1_count} files in Phase 1 and {phase2_count} files in Phase 2.")
-                elif selected_phase == 1:
-                    st.info(f"Processing {phase1_count} files in Phase 1.")
-                elif selected_phase == 2:
-                    st.info(f"Processing {phase2_count} files in Phase 2.")
-                
+                        # Show what's being processed
+                        if selected_phase == 0:
+                            st.info(f"Processing {phase1_count} files in Phase 1 and {phase2_count} files in Phase 2.")
+                        elif selected_phase == 1:
+                            st.info(f"Processing {phase1_count} files in Phase 1.")
+                        elif selected_phase == 2:
+                            st.info(f"Processing {phase2_count} files in Phase 2.")
+                        
                 # Define batch processing parameters for thread
                 batch_params = {
                     'api_key': os.environ.get('OPENAI_API_KEY', ''),
@@ -988,8 +1009,8 @@ with tab_extraction:
                     target=batch_processor,
                     args=(batch_params,)
                 )
-                processing_thread.daemon = True
-                processing_thread.start()
+                        processing_thread.daemon = True
+                        processing_thread.start()
             
             if not api_key_valid:
                 st.error("Please enter a valid OpenAI API key before processing files")
@@ -1220,7 +1241,6 @@ if st.session_state.file_data_list:
                 with col1:
                     # Display preview image if available
                     if 'preview_image' in file_data and file_data['preview_image'] and file_data['preview_image'].startswith('data:'):
-                        # Display base64 image (legacy support)
                         display_image(file_data['preview_image'])
                     elif 'preview_image_path' in file_data and file_data['preview_image_path'] and file_data['preview_image_path'] != "[embedded image in document]":
                         # Display image from file path
@@ -1636,8 +1656,8 @@ with tab_analysis:
             with col1:
                 fig = plot_format_distribution(df)
                 if fig is not None:
-                        st.plotly_chart(fig, use_container_width=True)
-                else:
+                st.plotly_chart(fig, use_container_width=True)
+            else:
                     st.info("Format information not available.")
             
             with col2:
@@ -2048,7 +2068,7 @@ with tab_analysis:
                     except (ImportError, ModuleNotFoundError):
                         st.warning("NLTK is not installed. Stopwords filtering is disabled. To enable, install with: pip install nltk")
                         use_stopwords = False
-                    except Exception as e:
+                except Exception as e:
                         st.warning(f"Could not filter stopwords: {str(e)}")
                         use_stopwords = False
                 
@@ -2114,7 +2134,7 @@ with tab_analysis:
                     if len(network_data['nodes']) > 0:
                         density = len(network_data['links']) / (len(network_data['nodes']) * (len(network_data['nodes'])-1)/2) if len(network_data['nodes']) > 1 else 0
                         st.metric("Network Density", f"{density:.2%}")
-                    else:
+            else:
                         st.metric("Network Density", "N/A")
                 
                 with col4:
@@ -2127,144 +2147,3 @@ with tab_analysis:
                 # Render the network
                 with st.spinner("Generating network visualization..."):
                     render_keyword_network(network_data)
-
-def create_lightweight_file_data(file_data_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Create a lightweight copy of file_data_list for session state storage.
-    Removes large text content and base64 images.
-    
-    Args:
-        file_data_list: The original file data list
-        
-    Returns:
-        A lightweight copy with large data removed
-    """
-    if not file_data_list:
-        return []
-    
-    lightweight_list = []
-    
-    for file_data in file_data_list:
-        # Create a shallow copy of the file data
-        light_data = {}
-        
-        # Copy only essential metadata, skip large content
-        for key, value in file_data.items():
-            # Skip base64 images
-            if key == 'preview_image' and isinstance(value, str) and value.startswith('data:image'):
-                continue
-                
-            # Skip full text content, but keep a small preview
-            elif key == 'text_content' and isinstance(value, str):
-                # Store length information
-                light_data['text_content_length'] = len(value)
-                # Keep just a small preview
-                preview_length = min(len(value), 100)
-                light_data['text_content_preview'] = value[:preview_length] + ('...' if preview_length < len(value) else '')
-                
-            # Keep path to preview image
-            elif key == 'preview_image_path':
-                light_data[key] = value
-                
-            # Keep all metadata
-            elif key in ['filename', 'full_path', 'title', 'author', 'abstract', 'theme', 
-                        'format', 'geographic_area', 'keywords', 'magazine', 'magazine_no', 
-                        'language', 'id', 'folder_images']:
-                light_data[key] = value
-        
-        lightweight_list.append(light_data)
-    
-    return lightweight_list
-
-def display_file_details(file_data):
-    """Display details of a selected file."""
-    try:
-        # File preview and basic details
-        col1, col2 = st.columns([1, 3])
-        
-        with col1:
-            # Display preview image if available
-            if 'preview_image_path' in file_data and file_data['preview_image_path']:
-                # Try to display from image path first (new method)
-                display_image(file_data['preview_image_path'])
-            elif 'preview_image' in file_data and file_data['preview_image']:
-                # Fall back to base64 image (legacy method)
-                display_image(file_data['preview_image'])
-            else:
-                st.info("No preview image available")
-        
-        with col2:
-            # Display basic file info
-            if 'filename' in file_data:
-                st.subheader(file_data['filename'])
-            
-            # Show full path (useful for debugging)
-            if 'full_path' in file_data:
-                st.text(f"Path: {file_data['full_path']}")
-                
-            # Display extracted fields
-            fields_to_display = [
-                ('title', 'Title'),
-                ('author', 'Author'),
-                ('magazine', 'Magazine'),
-                ('magazine_no', 'Magazine Number'),
-                ('language', 'Language')
-            ]
-            
-            for field_key, field_label in fields_to_display:
-                if field_key in file_data and file_data[field_key]:
-                    st.text(f"{field_label}: {file_data[field_key]}")
-            
-        # Expandable sections for more details
-        with st.expander("Abstract"):
-            if 'abstract' in file_data and file_data['abstract']:
-                st.write(file_data['abstract'])
-            else:
-                st.info("No abstract available")
-                
-        with st.expander("Metadata"):
-            # Create two columns for metadata
-            meta_col1, meta_col2 = st.columns(2)
-            
-            with meta_col1:
-                if 'theme' in file_data:
-                    st.write(f"**Theme:** {file_data['theme']}")
-                if 'format' in file_data:
-                    st.write(f"**Format:** {file_data['format']}")
-                if 'geographic_area' in file_data:
-                    st.write(f"**Geographic Area:** {file_data['geographic_area']}")
-                    
-            with meta_col2:
-                if 'keywords' in file_data:
-                    st.write("**Keywords:**")
-                    keywords = file_data['keywords'].split(',')
-                    for keyword in keywords:
-                        st.write(f"- {keyword.strip()}")
-        
-        # Display folder images if available
-        if 'folder_images' in file_data and file_data['folder_images']:
-            with st.expander("Additional Images"):
-                for img_path in file_data['folder_images']:
-                    st.text(os.path.basename(img_path))
-                    display_image(img_path)
-        
-        # Show reconciliation data if available
-        if all(k in file_data for k in ['original_magazine', 'original_title']):
-            with st.expander("Original vs. Reconciled Metadata"):
-                cols = st.columns(2)
-                with cols[0]:
-                    st.write("**Original Values:**")
-                    st.write(f"Magazine: {file_data.get('original_magazine', 'N/A')}")
-                    st.write(f"Issue: {file_data.get('original_magazine_no', 'N/A')}")
-                    st.write(f"Author: {file_data.get('original_author', 'N/A')}")
-                    st.write(f"Title: {file_data.get('original_title', 'N/A')}")
-                    
-                with cols[1]:
-                    st.write("**Reconciled Values:**")
-                    st.write(f"Magazine: {file_data.get('magazine', 'N/A')}")
-                    st.write(f"Issue: {file_data.get('magazine_no', 'N/A')}")
-                    st.write(f"Author: {file_data.get('author', 'N/A')}")
-                    st.write(f"Title: {file_data.get('title', 'N/A')}")
-            
-    except Exception as e:
-        st.error(f"Error displaying file details: {e}")
