@@ -6,7 +6,7 @@ from PIL import Image
 
 def extract_docx_content(file_path: str) -> Tuple[str, Optional[str]]:
     """
-    Extract text content and preview image from a DOCX file.
+    Extract text content from a DOCX file.
     
     Args:
         file_path: Path to the DOCX file
@@ -14,8 +14,13 @@ def extract_docx_content(file_path: str) -> Tuple[str, Optional[str]]:
     Returns:
         Tuple containing:
         - text: The extracted text content
-        - preview_image_path: Path to the saved preview image (if any), or None
+        - preview_image_path: Always None since we don't extract images
     """
+    # Skip .AppleDouble files and metadata files
+    if '.AppleDouble' in file_path or '/.' in file_path:
+        print(f"Skipping system file: {file_path}")
+        return "", None
+        
     try:
         doc = Document(file_path)
         
@@ -27,48 +32,13 @@ def extract_docx_content(file_path: str) -> Tuple[str, Optional[str]]:
         
         text_content = "\n".join(paragraphs)
         
-        # Extract first image (if any)
-        preview_image_path = None
-        
-        # Create a directory for images next to the document
-        doc_dir = os.path.dirname(file_path)
-        images_dir = os.path.join(doc_dir, "__images__")
-        os.makedirs(images_dir, exist_ok=True)
-        
-        # Get document name without extension for the image filename
-        doc_name = os.path.splitext(os.path.basename(file_path))[0]
-        
-        # Check for images in the document
-        for rel in doc.part.rels.values():
-            if "image" in rel.target_ref:
-                try:
-                    # Get image data
-                    image_data = rel.target_part.blob
-                    
-                    # Get image type from rel.target_ref (e.g., "image/jpeg")
-                    image_type = rel.target_ref.split('/')[-1]  # Extract extension
-                    
-                    # Create a filename for the image
-                    image_filename = f"{doc_name}_preview.{image_type}"
-                    image_path = os.path.join(images_dir, image_filename)
-                    
-                    # Save the image to disk
-                    with open(image_path, 'wb') as img_file:
-                        img_file.write(image_data)
-                    
-                    preview_image_path = image_path
-                    
-                    # Only use the first image as preview
-                    break
-                except Exception as e:
-                    print(f"Error extracting image: {e}")
-        
-        return text_content, preview_image_path
+        # We don't need to extract images from the document anymore
+        return text_content, None
     
     except Exception as e:
         print(f"Error parsing DOCX file {file_path}: {e}")
         return "", None
-        
+
 def save_preview_image(image_data: bytes, output_dir: str, file_name: str) -> str:
     """
     Save image data to the output directory.
@@ -104,26 +74,61 @@ def save_preview_image(image_data: bytes, output_dir: str, file_name: str) -> st
 def find_folder_images(file_path: str) -> List[str]:
     """
     Find all image files in the same folder as the DOCX file.
+    Returns relative paths rather than absolute paths.
     
     Args:
         file_path: Path to the DOCX file
         
     Returns:
-        List of full paths to image files in the folder
+        List of relative paths to image files in the folder
     """
     folder_path = os.path.dirname(file_path)
     image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp')
     images = []
     
+    # Skip .AppleDouble directories and look at the parent directory instead
+    if '.AppleDouble' in folder_path:
+        # Move up one directory to get the actual content folder
+        folder_path = os.path.dirname(folder_path)
+    
     try:
+        # Check if directory exists before listing
+        if not os.path.exists(folder_path):
+            print(f"Warning: Folder doesn't exist: {folder_path}")
+            return []
+            
+        # Get the project base directory for making relative paths
+        # Assuming a typical structure with /data/ as a subdirectory
+        base_dir = folder_path
+        if '/data/' in folder_path:
+            base_dir = folder_path.split('/data/')[0]
+        
+        # First look in the document's directory
         for file in os.listdir(folder_path):
             if file.lower().endswith(image_extensions):
                 image_path = os.path.join(folder_path, file)
-                images.append(image_path)
-                
+                # Verify the file exists and is accessible
+                if os.path.isfile(image_path) and os.access(image_path, os.R_OK):
+                    # Store path relative to project root if possible
+                    if image_path.startswith(base_dir):
+                        rel_path = os.path.relpath(image_path, base_dir)
+                        images.append(rel_path)
+                    else:
+                        images.append(image_path)
+        
         # Sort images by name to ensure consistent order
         images.sort()
         
+        # Log the result for debugging
+        if images:
+            print(f"Found {len(images)} image(s) for document: {file_path}")
+            for img in images[:3]:  # Print first 3 for brevity
+                print(f"  - {img}")
+            if len(images) > 3:
+                print(f"  - ... and {len(images) - 3} more")
+        else:
+            print(f"No images found for document: {file_path}")
+            
         return images
     except Exception as e:
         print(f"Error scanning folder for images: {e}")

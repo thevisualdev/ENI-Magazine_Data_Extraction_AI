@@ -76,11 +76,11 @@ def validate_magazine_names(df: pd.DataFrame) -> Dict[str, List[str]]:
 def validate_magazine_numbers(df: pd.DataFrame) -> Dict[str, Any]:
     """
     Check if magazine numbers are in the expected range:
-    - WE: 48-63
+    - WE: 34-63 (expanded range to include earlier issues)
     - Orizzonti: 55-64
     """
     expected_ranges = {
-        'WE': set(range(48, 64)),  # 48 to 63
+        'WE': set(range(34, 64)),  # 34 to 63 (expanded to include earlier issues)
         'Orizzonti': set(range(55, 65))  # 55 to 64
     }
     
@@ -102,7 +102,8 @@ def validate_magazine_numbers(df: pd.DataFrame) -> Dict[str, Any]:
             
         for idx, row in magazine_df.iterrows():
             issue = row['magazine_no_norm']
-            if issue is not None and issue not in expected_ranges[magazine]:
+            # Skip 'Not Specified' or None values when checking ranges
+            if issue is not None and issue not in expected_ranges[magazine] and row['magazine_no'] != 'Not Specified':
                 results['out_of_range_issues'].append({
                     'magazine': magazine,
                     'issue': row['magazine_no'],

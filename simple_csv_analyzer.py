@@ -154,7 +154,7 @@ elif page == "🔍 Data Validation":
     
     # Define expected ranges and values
     expected_ranges = {
-        'WE': list(range(48, 64)),  # 48 to 63
+        'WE': list(range(34, 64)),  # 34 to 63 (expanded to include earlier issues)
         'Orizzonti': list(range(55, 65))  # 55 to 64
     }
     
@@ -192,7 +192,8 @@ elif page == "🔍 Data Validation":
             
             for _, row in magazine_df.iterrows():
                 issue = row['magazine_no_norm']
-                if issue is not None and issue not in expected_issues:
+                # Skip 'Not Specified' or None values when checking ranges
+                if issue is not None and issue not in expected_issues and row['magazine_no'] != 'Not Specified':
                     out_of_range.append({
                         'magazine': magazine,
                         'issue': row['magazine_no'],

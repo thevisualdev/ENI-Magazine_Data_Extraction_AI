@@ -37,12 +37,21 @@ def extract_metadata_from_path(file_path: str, config: Dict[str, Any]) -> Dict[s
     print(f"Processing file path: {file_path}")
     print(f"Path components: {parts}")
     
+    # Extract base filename without extension and clean it up
+    base_filename = os.path.splitext(os.path.basename(file_path))[0]
+    # Remove problematic patterns from filenames
+    for pattern in ["(Copia in conflitto di", "(copia in conflitto di", "Copia in conflitto di"]:
+        if pattern in base_filename:
+            # Get the author part before the problematic pattern
+            base_filename = base_filename.split(pattern)[0].strip()
+            break
+    
     # Initialize metadata with default values
     metadata = {
         'magazine': 'Unknown',
         'magazine_no': '',
         'author': 'Unknown',
-        'title': os.path.splitext(os.path.basename(file_path))[0],
+        'title': base_filename,
         'file_path': file_path
     }
     
@@ -207,6 +216,10 @@ def process_directory(directory_path: str, config: Dict[str, Any]) -> List[Dict[
     
     # Walk through the directory structure
     for root, _, files in os.walk(directory_path):
+        # Skip hidden directories like .AppleDouble that contain macOS system files
+        if '.AppleDouble' in root or '/.' in root:
+            continue
+            
         for file in files:
             # Check for DOCX and other potential document formats
             if file.lower().endswith(('.docx', '.doc')):

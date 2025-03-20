@@ -33,17 +33,30 @@ def create_dataframe(file_data_list: List[Dict[str, Any]]) -> pd.DataFrame:
             # Set preview_image_path based on available images
             if 'folder_images' in file_data and file_data['folder_images']:
                 if isinstance(file_data['folder_images'], list) and file_data['folder_images']:
-                    row['preview_image_path'] = file_data['folder_images'][0]
+                    # Skip system files
+                    valid_images = [img for img in file_data['folder_images'] if '.AppleDouble' not in img and '/.' not in img]
+                    if valid_images:
+                        row['preview_image_path'] = valid_images[0]
+                    else:
+                        row['preview_image_path'] = ''
                 elif isinstance(file_data['folder_images'], str) and file_data['folder_images']:
                     paths = file_data['folder_images'].split('|')
-                    if paths:
-                        row['preview_image_path'] = paths[0]
+                    valid_paths = [p for p in paths if '.AppleDouble' not in p and '/.' not in p]
+                    if valid_paths:
+                        row['preview_image_path'] = valid_paths[0]
+                    else:
+                        row['preview_image_path'] = ''
                 else:
                     row['preview_image_path'] = ''
-            elif 'preview_image' in file_data and file_data['preview_image'] and not isinstance(file_data['preview_image'], str):
-                # Preview is something other than base64
-                row['preview_image_path'] = str(file_data['preview_image'])
             else:
+                row['preview_image_path'] = ''
+        
+        # Always ensure preview_image_path is not None or nan
+        if 'preview_image_path' in row:
+            if pd.isna(row['preview_image_path']) or row['preview_image_path'] is None:
+                row['preview_image_path'] = ''
+            elif isinstance(row['preview_image_path'], str) and ('.AppleDouble' in row['preview_image_path'] or '/.' in row['preview_image_path']):
+                # Clean up paths that contain .AppleDouble
                 row['preview_image_path'] = ''
         
         # Always include full_path for reference even if it's already in all_columns
@@ -119,17 +132,25 @@ def update_dataframe(df: pd.DataFrame, file_data: Dict[str, Any]) -> pd.DataFram
     if 'folder_images' in file_data and file_data['folder_images']:
         # If we have folder images, use the first one as preview path
         if isinstance(file_data['folder_images'], list) and file_data['folder_images']:
-            preview_image_path = file_data['folder_images'][0]
+            # Skip system metadata files (.AppleDouble)
+            valid_images = [img for img in file_data['folder_images'] if '.AppleDouble' not in img and '/.' not in img]
+            if valid_images:
+                preview_image_path = valid_images[0]
         elif isinstance(file_data['folder_images'], str) and file_data['folder_images']:
             paths = file_data['folder_images'].split('|')
-            if paths:
-                preview_image_path = paths[0]
+            valid_paths = [p for p in paths if '.AppleDouble' not in p and '/.' not in p]
+            if valid_paths:
+                preview_image_path = valid_paths[0]
     elif 'preview_image' in file_data and file_data['preview_image'] and not file_data['preview_image'].startswith('data:'):
-        # If preview_image is already a path, use it
-        preview_image_path = file_data['preview_image']
+        # We're no longer handling embedded images, so just clear this
+        preview_image_path = ""
     else:
-        # Mark that there was an embedded image but we're not storing it
-        preview_image_path = "[embedded image in document]"
+        # Just leave empty since we don't use embedded images
+        preview_image_path = ""
+    
+    # Don't allow None or nan values
+    if pd.isna(preview_image_path) or preview_image_path is None:
+        preview_image_path = ""
     
     # Create a new row with the file data
     row = {

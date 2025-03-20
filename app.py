@@ -1,15 +1,17 @@
 import os
+import sys
 import streamlit as st
 import pandas as pd
 import time
 import yaml
 import tempfile
+import shutil
 from PIL import Image
 import io
 import base64
 import threading
 import queue
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union, Set
 import dotenv
 import numpy as np
 import matplotlib.pyplot as plt
@@ -17,7 +19,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from collections import Counter, defaultdict
 import re
-import datetime
+from datetime import datetime
 import asyncio
 import json
 import traceback
@@ -266,17 +268,13 @@ def process_file(file_data: Dict[str, Any], df: pd.DataFrame, config: Dict[str, 
         return file_data, df
 
 def ensure_required_fields(file_data: Dict[str, Any]) -> None:
-    """Ensure all required fields are present with default values if missing."""
-    required_fields = ['abstract', 'theme', 'format', 'geographic_area', 'keywords']
+    """Ensure required field keys exist in the dictionary, but don't add default values."""
+    required_fields = ['abstract', 'theme', 'format', 'geographic_area', 'keywords', 'language']
     for field in required_fields:
-        if field not in file_data or not file_data[field]:
-            if field == 'abstract':
-                file_data[field] = "No abstract available"
-            elif field == 'keywords':
-                file_data[field] = "unknown, missing, unspecified"
-            else:
-                file_data[field] = "Unknown"
-            print(f"Added missing field '{field}' with default value")
+        if field not in file_data:
+            # Only add the field as empty, don't make assumptions about values
+            file_data[field] = ""
+            print(f"Added missing field '{field}' as empty value")
 
 def update_dataframe(file_data: Dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -311,7 +309,7 @@ def update_dataframe(file_data: Dict[str, Any], df: pd.DataFrame) -> pd.DataFram
             'magazine': file_data.get('magazine', ''),
             'magazine_no': file_data.get('magazine_no', ''),
             'language': file_data.get('language', ''),
-            'Last Updated': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'Last Updated': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'Phase': file_data.get('phase', 1)
         }])
         df = pd.concat([df, df_row], ignore_index=True)
@@ -323,7 +321,7 @@ def update_dataframe(file_data: Dict[str, Any], df: pd.DataFrame) -> pd.DataFram
                 df.loc[df['full_path'] == file_path, field] = file_data[field]
                 
         # Update timestamp
-        df.loc[df['full_path'] == file_path, 'Last Updated'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        df.loc[df['full_path'] == file_path, 'Last Updated'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     return df
 
@@ -423,7 +421,7 @@ def batch_processor(params=None):
                     file_data_list[idx] = updated_file_data
                 
                 # Update the DataFrame
-                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
                 # Check if the file is already in the DataFrame
                 file_row = df[df['full_path'] == file_data.get('full_path', '')]
@@ -446,8 +444,8 @@ def batch_processor(params=None):
                 if total_queue_size > 0:
                     progress_percentage = (processed_count / total_queue_size) * 100
                 
-                # Save the updated information periodically or after every 5 files
-                if processed_count % 5 == 0 or processing_queue.empty():
+                # Save the updated information periodically (every 10 files) or when queue is empty
+                if processed_count % 10 == 0 or processing_queue.empty():
                     try:
                         # Save DataFrame to CSV
                         save_to_csv(df, csv_path)
@@ -799,14 +797,46 @@ with tab_extraction:
                        value=config['prompts']['reconcile_metadata'],
                        height=200,
                        disabled=True)
-        
-        st.markdown("---")
+
+        # Add CSV management section to sidebar (if file_data_list exists)
+        if 'file_data_list' in st.session_state and st.session_state.file_data_list:
+            st.markdown("---")
+            st.subheader("CSV Data Management")
+            
+            # Reset CSV button with warning
+            if st.button("🗑️ Reset CSV Data", 
+                     help="WARNING: This will reset all extracted data to initial state",
+                     type="primary",
+                     use_container_width=True):
+                try:
+                    # Show warning confirmation
+                    if st.warning("⚠️ This will delete all extracted data! Are you sure?"):
+                        # Remove the CSV file
+                        if os.path.exists(CSV_PATH):
+                            # Create backup before deletion
+                            backup_path = f"{CSV_PATH}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                            shutil.copy(CSV_PATH, backup_path)
+                            os.remove(CSV_PATH)
+                            
+                        # Clear the dataframe from session state    
+                        if 'dataframe' in st.session_state:
+                            del st.session_state['dataframe']
+                            
+                        # Create a new DataFrame and save it
+                        df = create_dataframe(st.session_state.file_data_list)
+                        save_to_csv(df, CSV_PATH)
+                        st.session_state.dataframe = df
+                        
+                        st.success("CSV data has been reset successfully. A backup was created.")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Error resetting CSV data: {e}")
         
         # File/Folder Upload Section
         st.header("Upload Files")
         
-        # Add tabs for different upload methods
-        upload_tab1, upload_tab2 = st.tabs(["Upload ZIP", "Select Directory"])
+        # Add tabs for different upload methods - make "Select Directory" the default
+        upload_tab2, upload_tab1 = st.tabs(["Select Directory", "Upload ZIP"])
         
         with upload_tab1:
             st.markdown("Upload a ZIP file containing the ENI magazine folder structure.")
@@ -834,45 +864,76 @@ with tab_extraction:
         
         with upload_tab2:
             st.markdown("""
-            Enter the full path to a local directory containing the ENI magazine folder structure.
+            Select a local directory containing the ENI magazine folder structure.
             
             **Expected structure**: 
             - Root folder contains magazine folders (e.g., `Orizzonti_55`)
             - Each magazine folder contains author folders
             - Each author folder contains DOCX files
-            
-            The application will try to handle exceptions in the folder structure.
             """)
             
+            # Simpler layout with more prominence to the important elements
             directory_path = st.text_input(
                 "Directory path",
-                help="Enter the full path to the folder containing the magazine structure"
+                help="Enter the full path to the folder containing the magazine structure",
+                key="directory_path_input"
             )
             
-            col1, col2 = st.columns([1, 1])
+            # Better button layout with clear hierarchy
+            col1, col2, col3 = st.columns([2, 1, 1])
             
             with col1:
-                # Add a button to process the directory
-                if directory_path and st.button("Process Directory"):
-                    with st.spinner("Processing directory..."):
-                        try:
-                            # Process the directory
-                            config = load_config()
-                            file_data_list = process_directory(directory_path, config)
-                            st.session_state.file_data_list = file_data_list
-                            st.success(f"Processed directory. Found {len(file_data_list)} DOCX files.")
-                        except Exception as e:
-                            st.error(f"Error processing directory: {e}")
+                if directory_path:
+                    if st.button("Process Directory", type="primary", use_container_width=True):
+                        with st.spinner("Processing directory..."):
+                            try:
+                                config = load_config()
+                                file_data_list = process_directory(directory_path, config)
+                                st.session_state.file_data_list = file_data_list
+                                st.success(f"Processed directory. Found {len(file_data_list)} DOCX files.")
+                            except Exception as e:
+                                st.error(f"Error processing directory: {e}")
+                else:
+                    st.button("Process Directory", disabled=True, use_container_width=True, 
+                             help="Enter a directory path first")
             
             with col2:
-                # Add a button to show common paths as examples
-                if st.button("Show Examples"):
-                    st.info("""
+                if st.button("Browse...", use_container_width=True):
+                    try:
+                        # Create a temporary command to run based on OS
+                        if os.name == 'nt':  # Windows
+                            command = "explorer"
+                        elif os.name == 'posix':  # macOS or Linux
+                            if 'darwin' in sys.platform:  # macOS
+                                command = "open"
+                            else:  # Linux
+                                command = "xdg-open"
+                        
+                        # Run the file browser
+                        os.system(f'{command} .')
+                        
+                        st.info("""
+                        1. Navigate to your data directory
+                        2. Copy the full path
+                        3. Paste it in the text field above
+                        
+                        **Tip:** On macOS, right-click a folder and hold Option to see 'Copy as Pathname'
+                        """)
+                    except Exception as e:
+                        st.error(f"Couldn't open file browser: {e}")
+            
+            with col3:
+                if st.button("Examples", use_container_width=True):
+                    st.info(f"""
                     Example paths:
                     - macOS: /Users/username/Documents/ENI_Magazines
                     - Windows: C:\\Users\\username\\Documents\\ENI_Magazines
                     - Linux: /home/username/ENI_Magazines
+                    
+                    **Current directory:** {os.getcwd()}
                     """)
+            
+            st.markdown("The application will try to handle exceptions in the folder structure.")
         
         # Batch processing controls
         if st.session_state.file_data_list:
@@ -1016,7 +1077,8 @@ with tab_extraction:
                     if progress_pct == 0.0 and total_queue_size > 0:
                         progress_pct = min(1.0, processed_files / total_queue_size)
                     
-                    progress_bar = st.progress(progress_pct)
+                    # Convert from percentage (0-100) to proportion (0-1)
+                    progress_bar = st.progress(progress_pct / 100.0)
                 
                 with col2:
                     if total_queue_size > 0:
@@ -1081,31 +1143,13 @@ if st.session_state.file_data_list:
     
     st.header("Files")
     
-    # Add button to reset CSV data
-    col1, col2, col3 = st.columns([1, 1, 2])
+    # Reload CSV button (only keep this one in the main area)
+    col1, col2 = st.columns([1, 3])
     with col1:
-        if st.button("Reset CSV Data"):
-            try:
-                # Remove the CSV file
-                if os.path.exists(CSV_PATH):
-                    os.remove(CSV_PATH)
-                    
-                # Clear the dataframe from session state    
-                if 'dataframe' in st.session_state:
-                    del st.session_state['dataframe']
-                    
-                # Create a new DataFrame and save it
-                df = create_dataframe(st.session_state.file_data_list)
-                save_to_csv(df, CSV_PATH)
-                st.session_state.dataframe = df
-                
-                st.success("CSV data has been reset successfully.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error resetting CSV data: {e}")
-    
-    with col2:
-        if st.button("Reload CSV Data"):
+        if st.button("🔄 Reload CSV Data", 
+                  help="Load the latest data from the CSV file on disk",
+                  type="secondary",
+                  use_container_width=True):
             try:
                 # Force reload from disk
                 if os.path.exists(CSV_PATH):
@@ -1197,23 +1241,142 @@ if st.session_state.file_data_list:
     tab_all, tab_phase1, tab_phase2, tab_complete = st.tabs(["All Files", "Phase 1 Needed", "Phase 2 Needed", "Completed"])
     
     with tab_all:
+        # Add search and filtering options
+        st.subheader("Filter Files")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            search_term = st.text_input("Search by title, author, or content", 
+                                      help="Enter text to search in title, author, or content",
+                                      placeholder="Enter search term...")
+        
+        with col2:
+            filter_options = ["All"]
+            # Add magazine options
+            if 'dataframe' in st.session_state:
+                magazines = st.session_state.dataframe['magazine'].unique().tolist()
+                filter_options.extend([f"Magazine: {m}" for m in magazines if m and m != 'nan'])
+            
+            # Add filter options for missing/problematic data
+            filter_options.extend([
+                "Missing abstracts", 
+                "Missing themes",
+                "Missing authors", 
+                "Missing titles",
+                "Contains 'Unknown'",
+                "Contains 'Not Specified'",
+                "Contains 'nan'"
+            ])
+            
+            filter_by = st.selectbox("Filter by", filter_options)
+        
+        with col3:
+            sort_options = [
+                "Title (A-Z)",
+                "Title (Z-A)",
+                "Magazine (A-Z)",
+                "Magazine Issue (Newest)",
+                "Magazine Issue (Oldest)",
+                "Author (A-Z)",
+                "Author (Z-A)"
+            ]
+            sort_by = st.selectbox("Sort by", sort_options)
+        
+        # Apply filters to the file list
+        filtered_files = st.session_state.file_data_list.copy()
+        
+        # Apply search filter
+        if search_term:
+            search_term = search_term.lower()
+            filtered_files = [
+                f for f in filtered_files 
+                if search_term in str(f.get('title', '')).lower() or 
+                   search_term in str(f.get('author', '')).lower() or
+                   search_term in str(f.get('abstract', '')).lower() or
+                   search_term in str(f.get('text_content', '')).lower()
+            ]
+        
+        # Apply dropdown filter
+        if filter_by != "All":
+            if filter_by.startswith("Magazine: "):
+                magazine_name = filter_by.replace("Magazine: ", "")
+                filtered_files = [f for f in filtered_files if f.get('magazine', '') == magazine_name]
+            elif filter_by == "Missing abstracts":
+                filtered_files = [
+                    f for f in filtered_files 
+                    if 'abstract' not in f or not f['abstract'] or 
+                       f['abstract'] == 'nan' or f['abstract'] == 'Not Specified'
+                ]
+            elif filter_by == "Missing themes":
+                filtered_files = [
+                    f for f in filtered_files 
+                    if 'theme' not in f or not f['theme'] or 
+                       f['theme'] == 'nan' or f['theme'] == 'Not Specified'
+                ]
+            elif filter_by == "Missing authors":
+                filtered_files = [
+                    f for f in filtered_files 
+                    if 'author' not in f or not f['author'] or 
+                       f['author'] == 'nan' or f['author'] == 'Unknown'
+                ]
+            elif filter_by == "Missing titles":
+                filtered_files = [
+                    f for f in filtered_files 
+                    if 'title' not in f or not f['title'] or 
+                       f['title'] == 'nan' or f['title'] == 'Unknown'
+                ]
+            elif filter_by == "Contains 'Unknown'":
+                filtered_files = [
+                    f for f in filtered_files 
+                    if any(str(v) == 'Unknown' for v in f.values())
+                ]
+            elif filter_by == "Contains 'Not Specified'":
+                filtered_files = [
+                    f for f in filtered_files 
+                    if any(str(v) == 'Not Specified' for v in f.values())
+                ]
+            elif filter_by == "Contains 'nan'":
+                filtered_files = [
+                    f for f in filtered_files 
+                    if any(str(v) == 'nan' for v in f.values())
+                ]
+        
+        # Apply sorting
+        if sort_by == "Title (A-Z)":
+            filtered_files.sort(key=lambda x: str(x.get('title', '')).lower())
+        elif sort_by == "Title (Z-A)":
+            filtered_files.sort(key=lambda x: str(x.get('title', '')).lower(), reverse=True)
+        elif sort_by == "Magazine (A-Z)":
+            filtered_files.sort(key=lambda x: (str(x.get('magazine', '')).lower(), str(x.get('magazine_no', ''))))
+        elif sort_by == "Magazine Issue (Newest)":
+            filtered_files.sort(key=lambda x: (str(x.get('magazine', '')).lower(), str(x.get('magazine_no', ''))), reverse=True)
+        elif sort_by == "Magazine Issue (Oldest)":
+            filtered_files.sort(key=lambda x: (str(x.get('magazine', '')).lower(), str(x.get('magazine_no', ''))))
+        elif sort_by == "Author (A-Z)":
+            filtered_files.sort(key=lambda x: str(x.get('author', '')).lower())
+        elif sort_by == "Author (Z-A)":
+            filtered_files.sort(key=lambda x: str(x.get('author', '')).lower(), reverse=True)
+        
+        # Display filter results
+        total_filtered = len(filtered_files)
+        st.write(f"Showing {total_filtered} of {total_files} files")
+        
         # Add pagination to limit the number of displayed files
         page_size = 10  # Show only 10 items per page
-        total_files = len(st.session_state.file_data_list)
-        total_pages = (total_files + page_size - 1) // page_size  # Ceiling division
+        total_pages = (total_filtered + page_size - 1) // page_size  # Ceiling division
         
         if total_pages > 1:
             page = st.number_input("Page", min_value=1, max_value=total_pages, value=1)
-            st.write(f"Showing page {page} of {total_pages} ({total_files} total files)")
+            st.write(f"Showing page {page} of {total_pages} ({total_filtered} total files)")
         else:
             page = 1
         
         # Calculate the slice of files to display
         start_idx = (page - 1) * page_size
-        end_idx = min(start_idx + page_size, total_files)
+        end_idx = min(start_idx + page_size, total_filtered)
         
         # Only display files for the current page
-        for i, file_data in enumerate(st.session_state.file_data_list[start_idx:end_idx], start=start_idx):
+        for i, file_data in enumerate(filtered_files[start_idx:end_idx], start=start_idx):
             with st.expander(f"{file_data['title']} ({file_data['magazine']} {file_data['magazine_no']} - {file_data['author']})"):
                 col1, col2 = st.columns([1, 3])
                 
@@ -1652,11 +1815,16 @@ with tab_analysis:
                 st.subheader("Language Distribution")
                 language_pie, language_stacked = plot_language_distribution(df)
                 
-            col1, col2 = st.columns(2)
-            with col1:
-                    st.plotly_chart(language_pie, use_container_width=True)
-            with col2:
-                    st.plotly_chart(language_stacked, use_container_width=True)
+                if language_pie is not None and language_stacked is not None:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.plotly_chart(language_pie, use_container_width=True)
+                    with col2:
+                        st.plotly_chart(language_stacked, use_container_width=True)
+                else:
+                    st.info("Language distribution data not available.")
+            else:
+                st.info("Language data not available in the dataset.")
             
         with data_validation_tab:
             st.subheader("🔍 Data Validation")
@@ -1670,7 +1838,7 @@ with tab_analysis:
             
             # Define expected ranges and values
             expected_ranges = {
-                'WE': list(range(48, 64)),  # 48 to 63
+                'WE': list(range(34, 64)),  # 34 to 63 (expanded to include earlier issues)
                 'Orizzonti': list(range(55, 65))  # 55 to 64
             }
             
@@ -1708,7 +1876,8 @@ with tab_analysis:
                     
                     for _, row in magazine_df.iterrows():
                         issue = row['magazine_no_norm']
-                        if issue is not None and issue not in expected_issues:
+                        # Skip 'Not Specified' or None values when checking ranges
+                        if issue is not None and issue not in expected_issues and row['magazine_no'] != 'Not Specified':
                             out_of_range.append({
                                 'magazine': magazine,
                                 'issue': row['magazine_no'],
@@ -1780,7 +1949,8 @@ with tab_analysis:
                 
                 required_fields = [
                     'author', 'title', 'magazine', 'magazine_no', 
-                    'abstract', 'theme', 'format', 'geographic_area', 'keywords'
+                    'abstract', 'theme', 'format', 'geographic_area', 
+                    'keywords', 'language'
                 ]
                 
                 # Check for missing fields
